@@ -16,11 +16,17 @@
    - **TUYỆT ĐỐI KHÔNG ĐƯỢC THÊM BẤT KỲ HỆ ĐIỀU HÀNH NÀO KHÁC** (Không thêm iOS, macOS, Linux, Web/Wasm).
 4. **Chuẩn chất lượng build:**
    - Sau khi code hoặc sửa bug, bắt buộc chạy build kiểm thử dứt điểm đạt **`0 Error, 0 Warning`**.
-5. **Kỷ luật Git & Commit:**
+5. **Quy tắc thư mục xuất bản (Strict Publish Output Location):**
+   - Mọi quá trình build (cả qua `build.bat` lẫn lệnh CLI thủ công) **BẮT BUỘC LUÔN LUÔN XUẤT SẢN PHẨM VÀO THƯ MỤC `publish\` NẰM Ở CÙNG CẤP FOLDER VỚI `workflow.md`** (tức thư mục gốc của repository).
+   - Sản phẩm xuất xưởng chuẩn tại `publish/`:
+     - `publish\ComicReader.exe` (Windows Standalone Single-File EXE).
+     - `publish\ComicReader-Signed.apk` (Android Release Signed APK).
+   - Nghiêm cấm để file thành phẩm rải rác trong các thư mục con của từng project.
+6. **Kỷ luật Git & Commit:**
    - Chỉ được phép **commit local**, đưa mã hash ngắn cho người dùng.
    - Tuyệt đối **không tự ý git push lên GitHub trừ khi người dùng có yêu cầu rõ ràng**.
    - Định dạng commit theo Conventional Commits: `<type>(<scope>): <mô tả ngắn gọn>` ($\le 72$ ký tự).
-6. **Định dạng 3 dòng trạng thái chuẩn bắt buộc ở cuối mỗi câu trả lời:**
+7. **Định dạng 3 dòng trạng thái chuẩn bắt buộc ở cuối mỗi câu trả lời:**
    ```text
    commit local: <mã hash ngắn>
    commit github: <"không" hoặc "có" nếu được yêu cầu push>
@@ -98,25 +104,28 @@ comic reader quoc dang/
 
 ## 4. HƯỚNG DẪN BUILD & XUẤT XƯỞNG (BUILD & PUBLISH GUIDE)
 
+> **LƯU Ý BẮT BUỘC:** Toàn bộ thành phẩm sau khi xuất bản PHẢI nằm tại thư mục `publish\` ở cùng cấp folder với `workflow.md` (`<RepoRoot>\publish\`).
+
 ### 4.1. Lệnh 1-Click: `build.bat`
-Chạy file `build.bat` tại thư mục gốc để tự động thực hiện:
+Chạy file `build.bat` tại thư mục gốc (cùng cấp `workflow.md`) để tự động thực hiện:
 1. Dọn dẹp các thư mục artifacts cũ và tắt tiến trình đang chạy.
-2. Xuất bản **Windows x64 Single-file Standalone EXE** (`publish\ComicReader.exe`).
-3. Biên dịch và đóng gói **Android Release Signed APK** (`publish\ComicReader-Signed.apk`).
-4. Tổng kết kích thước và đường dẫn các file xuất bản tại thư mục `publish/`.
+2. Xuất bản **Windows x64 Single-file Standalone EXE** vào `%~dp0publish\ComicReader.exe`.
+3. Biên dịch và đóng gói **Android Release Signed APK** vào `%~dp0publish\ComicReader-Signed.apk`.
+4. Tổng kết kích thước và đường dẫn các file xuất bản tại thư mục `publish/` ở gốc repository.
 
 ### 4.2. Lệnh CLI thủ công
 - **Build toàn bộ Solution:**
   ```cmd
   dotnet build ComicReader.slnx -c Release
   ```
-- **Build riêng Windows Desktop:**
+- **Build riêng Windows Desktop (xuất ra publish cùng cấp workflow.md):**
   ```cmd
-  dotnet publish ComicReader.Desktop\ComicReader.Desktop.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish
+  dotnet publish ComicReader.Desktop\ComicReader.Desktop.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o "%~dp0publish"
   ```
-- **Build riêng Android APK:**
+- **Build riêng Android APK (sao chép Signed APK vào publish cùng cấp workflow.md):**
   ```cmd
   dotnet build ComicReader.Android\ComicReader.Android.csproj -c Release
+  copy /y "ComicReader.Android\bin\Release\net10.0-android\*Signed.apk" "%~dp0publish\ComicReader-Signed.apk"
   ```
 
 ---
