@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="ComicReader.Android/ComicReader.Android.csproj" />
+  <Project Path="ComicReader.Desktop/ComicReader.Desktop.csproj" />
+  <Project Path="ComicReader/ComicReader.csproj" />
+</Solution>
