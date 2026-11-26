@@ -105,6 +105,19 @@
 
                     <Button
                         Classes="reader-toolbar-btn"
+                        Command="{CompiledBinding FitWidthCommand}"
+                        Content="Fit W"
+                        ToolTip.Tip="Fit Width" />
+
+                    <Button
+                        Margin="0,0,8,0"
+                        Classes="reader-toolbar-btn"
+                        Command="{CompiledBinding FitPageCommand}"
+                        Content="Fit P"
+                        ToolTip.Tip="Fit Page" />
+
+                    <Button
+                        Classes="reader-toolbar-btn"
                         Classes.bookmarked="{CompiledBinding IsCurrentPageBookmarked}"
                         Command="{CompiledBinding AddBookmarkCommand}"
                         ToolTip.Tip="Bookmark this page">
@@ -136,54 +149,89 @@
 
             <ListBox.ItemTemplate>
                 <DataTemplate x:DataType="models:ComicPageItem">
-                    <Grid
-                        MinHeight="{CompiledBinding PlaceholderHeight}"
+                    <!-- Zoom via ScaleTransform inside LayoutTransformControl so both Image and PlaceholderHeight scale accurately -->
+                    <LayoutTransformControl
                         Margin="0,6,0,6"
                         HorizontalAlignment="Center"
-                        VerticalAlignment="Top"
-                        Background="Transparent"
-                        Focusable="False"
-                        SizeChanged="OnPageContainerSizeChanged">
-
-                        <!-- Page image: zoom applied via ScaledPageWidth (no LayoutTransformControl overhead) -->
-                        <Image
-                            x:Name="PageImage"
-                            Width="{CompiledBinding ScaledPageWidth, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
+                        VerticalAlignment="Top">
+                        <LayoutTransformControl.LayoutTransform>
+                            <ScaleTransform
+                                ScaleX="{CompiledBinding ZoomLevel, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
+                                ScaleY="{CompiledBinding ZoomLevel, RelativeSource={RelativeSource AncestorType=views:ReaderView}}" />
+                        </LayoutTransformControl.LayoutTransform>
+                        <Grid
+                            MinHeight="{CompiledBinding PlaceholderHeight}"
                             HorizontalAlignment="Center"
                             VerticalAlignment="Top"
-                            RenderOptions.BitmapInterpolationMode="MediumQuality"
-                            Source="{CompiledBinding Image}"
-                            Stretch="Uniform" />
+                            Background="Transparent"
+                            Focusable="False"
+                            SizeChanged="OnPageContainerSizeChanged">
 
-                        <!-- Per-page Bookmark Indicator Badge -->
-                        <Border
-                            Margin="12"
-                            Padding="10,6"
-                            HorizontalAlignment="Right"
-                            VerticalAlignment="Top"
-                            Background="#CC181818"
-                            BorderBrush="{StaticResource AccentRedBrush}"
-                            BorderThickness="1"
-                            CornerRadius="6"
-                            IsVisible="{CompiledBinding IsBookmarked}">
-                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                <PathIcon
-                                    Width="14"
-                                    Height="14"
-                                    Data="{StaticResource IconBookmark}"
-                                    Foreground="{StaticResource AccentRedBrush}" />
-                                <TextBlock
-                                    VerticalAlignment="Center"
-                                    FontSize="12"
-                                    FontWeight="SemiBold"
-                                    Foreground="White"
-                                    Text="{CompiledBinding BookmarkBadgeText}" />
-                            </StackPanel>
-                        </Border>
-                    </Grid>
+                            <Image
+                                x:Name="PageImage"
+                                Width="{CompiledBinding BasePageWidth, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Top"
+                                RenderOptions.BitmapInterpolationMode="MediumQuality"
+                                Source="{CompiledBinding Image}"
+                                Stretch="Uniform" />
+
+                            <!-- Per-page Bookmark Indicator Badge -->
+                            <Border
+                                Margin="12"
+                                Padding="10,6"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Top"
+                                Background="#CC181818"
+                                BorderBrush="{StaticResource AccentRedBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                IsVisible="{CompiledBinding IsBookmarked}">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <PathIcon
+                                        Width="14"
+                                        Height="14"
+                                        Data="{StaticResource IconBookmark}"
+                                        Foreground="{StaticResource AccentRedBrush}" />
+                                    <TextBlock
+                                        VerticalAlignment="Center"
+                                        FontSize="12"
+                                        FontWeight="SemiBold"
+                                        Foreground="White"
+                                        Text="{CompiledBinding BookmarkBadgeText}" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </LayoutTransformControl>
                 </DataTemplate>
             </ListBox.ItemTemplate>
         </ListBox>
+
+        <!-- Floating Page Loading Indicator (shown only when target page is not yet cached) -->
+        <Border
+            Grid.Row="1"
+            Padding="14,10"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            Background="#CC1A1A1A"
+            BorderBrush="#33FFFFFF"
+            BorderThickness="1"
+            CornerRadius="10"
+            IsHitTestVisible="False"
+            IsVisible="{CompiledBinding IsLoadingPage}">
+            <StackPanel Spacing="6">
+                <ProgressBar
+                    Width="120"
+                    Height="4"
+                    Foreground="{StaticResource AccentRedBrush}"
+                    IsIndeterminate="True" />
+                <TextBlock
+                    HorizontalAlignment="Center"
+                    FontSize="12"
+                    Foreground="#CCCCCC"
+                    Text="Loading page..." />
+            </StackPanel>
+        </Border>
 
         <!-- Floating Animated Bookmark Toast -->
         <Border

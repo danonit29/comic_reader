@@ -1,0 +1,22 @@
+[package]
+name = "comic_engine"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "comic_engine"
+crate-type = ["cdylib"]
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
+libc = "0.2"
+memmap2 = "0.9"
+natord = "1.0"
+pdfium-render = "0.8"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

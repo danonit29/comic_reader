@@ -20,27 +20,31 @@ namespace ComicReader.Views
         // ── constants ──────────────────────────────────────────────────────────
         private const double AutoScrollDeadZone   = 8.0;
         private const double AutoScrollSpeedFactor = 0.28;
-        private const int    SliderDebounceMs      = 180;
-        private const int    ScrollDebounceMs      = 150;
+        private const int    SliderDebounceMs      = 200;
+        private const int    ScrollThrottleMs      = 80;
 
         // ── private state ──────────────────────────────────────────────────────
         private ScrollViewer?      _scrollViewer;
         private DispatcherTimer?   _autoScrollTimer;
         private DispatcherTimer?   _sliderDebounceTimer;
         private DispatcherTimer?   _scrollDebounceTimer;
+        private DateTime           _lastScrollProcessUtc = DateTime.MinValue;
+        private DateTime           _suppressScrollUntilUtc = DateTime.MinValue;
         private Point              _lastDragPoint;
+        private Point?             _pendingZoomAnchor;
         private Point              _autoScrollOrigin;
         private Point              _autoScrollCurrent;
         private bool               _isDragging;
         private bool               _isAutoScrolling;
         private bool               _isSuppressingScrollTracking;
+        private bool               _isResizeRestorePending;
         // Tracks whether the slider thumb is currently being dragged by the user.
         // Reset to false only after the debounce timer fires, ensuring no premature navigation.
         private bool               _isDraggingSlider;
         private ReaderViewModel?   _subscribedViewModel;
 
         // ── styled properties exposed to DataTemplates ─────────────────────────
-        /// <summary>Zoom scale for page images, bound via RelativeSource inside DataTemplate.</summary>
+        /// <summary>Zoom scale for page images, bound via RelativeSource to ScaleTransform.</summary>
         public static readonly StyledProperty<double> ZoomLevelProperty =
             AvaloniaProperty.Register<ReaderView, double>(nameof(ZoomLevel), 1.0);
 
@@ -60,16 +64,6 @@ namespace ComicReader.Views
             set => SetValue(BasePageWidthProperty, value);
         }
 
-        /// <summary>Effective page width after applying ZoomLevel (avoids LayoutTransformControl overhead).</summary>
-        public static readonly StyledProperty<double> ScaledPageWidthProperty =
-            AvaloniaProperty.Register<ReaderView, double>(nameof(ScaledPageWidth), 900.0);
-
-        public double ScaledPageWidth
-        {
-            get => GetValue(ScaledPageWidthProperty);
-            set => SetValue(ScaledPageWidthProperty, value);
-        }
-
         /// <summary>Strongly-typed ViewModel for use in DataTemplate CompiledBindings.</summary>
         public ReaderViewModel? ViewModel => DataContext as ReaderViewModel;
 
@@ -81,6 +75,7 @@ namespace ComicReader.Views
             DataContextChanged += OnDataContextChanged;
             Loaded             += OnLoaded;
             Unloaded           += OnUnloaded;
+            KeyDown            += OnReaderKeyDown;
 
             // Attach scroll-viewer after template is applied.
             PagesListBox.TemplateApplied += (_, _) => AttachScrollViewer();
@@ -109,7 +104,7 @@ namespace ComicReader.Views
             _sliderDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(SliderDebounceMs) };
             _sliderDebounceTimer.Tick += OnSliderDebounceTick;
 
-            _scrollDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ScrollDebounceMs) };
+            _scrollDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ScrollThrottleMs) };
             _scrollDebounceTimer.Tick += OnScrollDebounceTick;
         }
 
@@ -126,6 +121,8 @@ namespace ComicReader.Views
                 _subscribedViewModel.ScrollToPageRequested              -= OnScrollToPageRequested;
                 _subscribedViewModel.RestoreExactPagePositionRequested  -= OnRestoreExactPagePositionRequested;
                 _subscribedViewModel.ZoomChanging                       -= OnZoomChanging;
+                _subscribedViewModel.FitWidthRequested                  -= OnFitWidthRequested;
+                _subscribedViewModel.FitPageRequested                   -= OnFitPageRequested;
                 _subscribedViewModel.PropertyChanged                    -= OnViewModelPropertyChanged;
             }
 
@@ -143,10 +140,11 @@ namespace ComicReader.Views
             if (_subscribedViewModel is not null)
             {
                 ZoomLevel = _subscribedViewModel.ZoomLevel;
-                UpdateScaledPageWidth();
                 _subscribedViewModel.ScrollToPageRequested             += OnScrollToPageRequested;
                 _subscribedViewModel.RestoreExactPagePositionRequested += OnRestoreExactPagePositionRequested;
                 _subscribedViewModel.ZoomChanging                      += OnZoomChanging;
+                _subscribedViewModel.FitWidthRequested                 += OnFitWidthRequested;
+                _subscribedViewModel.FitPageRequested                  += OnFitPageRequested;
                 _subscribedViewModel.PropertyChanged                   += OnViewModelPropertyChanged;
             }
         }
@@ -156,7 +154,34 @@ namespace ComicReader.Views
             if (e.PropertyName == nameof(ReaderViewModel.ZoomLevel) && _subscribedViewModel is not null)
             {
                 ZoomLevel = _subscribedViewModel.ZoomLevel;
-                UpdateScaledPageWidth();
+                _scrollViewer?.InvalidateMeasure();
+            }
+        }
+
+        private void OnReaderKeyDown(object? sender, KeyEventArgs e)
+        {
+            if (_subscribedViewModel is null || _subscribedViewModel.TotalPages <= 0) return;
+
+            switch (e.Key)
+            {
+                case Key.Left:
+                case Key.PageUp:
+                    _subscribedViewModel.PreviousPageCommand.Execute(null);
+                    e.Handled = true;
+                    break;
+                case Key.Right:
+                case Key.PageDown:
+                    _subscribedViewModel.NextPageCommand.Execute(null);
+                    e.Handled = true;
+                    break;
+                case Key.Home:
+                    _subscribedViewModel.JumpToPage(1);
+                    e.Handled = true;
+                    break;
+                case Key.End:
+                    _subscribedViewModel.JumpToPage(_subscribedViewModel.TotalPages);
+                    e.Handled = true;
+                    break;
             }
         }
 
@@ -192,11 +217,64 @@ namespace ComicReader.Views
             }
         }
 
-        // ── page-width calculation ─────────────────────────────────────────────
+        // ── page-width calculation & window resize preservation ─────────────────
         private void OnPagesListBoxSizeChanged(object? sender, SizeChangedEventArgs e)
         {
-            if (Math.Abs(e.NewSize.Width - e.PreviousSize.Width) >= 1.0)
-                UpdateBasePageWidth();
+            if (Math.Abs(e.NewSize.Width - e.PreviousSize.Width) < 1.0 &&
+                Math.Abs(e.NewSize.Height - e.PreviousSize.Height) < 1.0)
+            {
+                return;
+            }
+
+            ScrollViewer? sv = AttachScrollViewer();
+            (int savedPage, double savedLocalRatio) = (_subscribedViewModel is not null && sv is not null)
+                ? DetectCurrentPage(sv)
+                : (Math.Max(1, _subscribedViewModel?.CurrentPage ?? 1), 0.0);
+
+            // Update BasePageWidth synchronously during SizeChanged so layout settles in one pass.
+            UpdateBasePageWidth();
+
+            if (_isResizeRestorePending || _subscribedViewModel is null || _subscribedViewModel.TotalPages <= 0)
+            {
+                return;
+            }
+
+            _isResizeRestorePending = true;
+            Dispatcher.UIThread.Post(() =>
+            {
+                _isResizeRestorePending = false;
+                if (_subscribedViewModel is null || _subscribedViewModel.TotalPages <= 0) return;
+
+                if (_subscribedViewModel.IsFitPage)
+                    OnFitPageRequested();
+
+                if (savedPage >= 1 && savedPage <= _subscribedViewModel.TotalPages)
+                {
+                    OnRestoreExactPagePositionRequested(savedPage, savedLocalRatio);
+                }
+            }, DispatcherPriority.Loaded);
+        }
+
+        private void OnFitWidthRequested()
+        {
+            if (_subscribedViewModel is null) return;
+            _subscribedViewModel.SetZoomFromView(Helpers.AppConstants.DefaultZoomLevel, preserveFocal: true);
+        }
+
+        private void OnFitPageRequested()
+        {
+            if (_subscribedViewModel is null) return;
+            ScrollViewer? sv = AttachScrollViewer();
+            if (sv is null || sv.Viewport.Height <= 0 || BasePageWidth <= 0) return;
+
+            int idx = Math.Clamp(_subscribedViewModel.CurrentPage - 1, 0, Math.Max(0, _subscribedViewModel.Pages.Count - 1));
+            double pageHeight = idx < _subscribedViewModel.Pages.Count
+                ? _subscribedViewModel.Pages[idx].PlaceholderHeight
+                : 900.0;
+            if (pageHeight <= 0) pageHeight = 900.0;
+
+            double fitZoom = Math.Clamp((sv.Viewport.Height - 24.0) / pageHeight, Helpers.AppConstants.MinZoomLevel, Helpers.AppConstants.MaxZoomLevel);
+            _subscribedViewModel.SetZoomFromView(fitZoom, preserveFocal: true);
         }
 
         private void UpdateBasePageWidth()
@@ -207,15 +285,7 @@ namespace ComicReader.Views
             if (Math.Abs(BasePageWidth - target) >= 1.0)
             {
                 BasePageWidth = target;
-                UpdateScaledPageWidth();
             }
-        }
-
-        private void UpdateScaledPageWidth()
-        {
-            double target = Math.Max(200.0, BasePageWidth * ZoomLevel);
-            if (Math.Abs(ScaledPageWidth - target) >= 1.0)
-                ScaledPageWidth = target;
         }
 
         // ── zoom focal-point preservation ──────────────────────────────────────
@@ -224,14 +294,19 @@ namespace ComicReader.Views
             ScrollViewer? sv = AttachScrollViewer();
             if (sv is null || oldZoom <= 0 || newZoom <= 0) return;
 
-            double centerY = (sv.Offset.Y + sv.Viewport.Height * 0.5) / oldZoom;
-            double centerX = (sv.Offset.X + sv.Viewport.Width  * 0.5) / oldZoom;
+            Point anchor = _pendingZoomAnchor ?? new Point(sv.Viewport.Width * 0.5, sv.Viewport.Height * 0.5);
+            _pendingZoomAnchor = null;
+
+            double contentY = (sv.Offset.Y + anchor.Y) / oldZoom;
+            double contentX = (sv.Offset.X + anchor.X) / oldZoom;
 
             _isSuppressingScrollTracking = true;
+            sv.InvalidateMeasure();
             Dispatcher.UIThread.Post(() =>
             {
-                double targetY = Math.Max(0, centerY * newZoom - sv.Viewport.Height * 0.5);
-                double targetX = Math.Max(0, centerX * newZoom - sv.Viewport.Width  * 0.5);
+                sv.InvalidateMeasure();
+                double targetY = Math.Max(0, contentY * newZoom - anchor.Y);
+                double targetX = Math.Max(0, contentX * newZoom - anchor.X);
                 sv.Offset = new Vector(targetX, targetY);
                 ReleaseScrollSuppression();
             }, DispatcherPriority.Loaded);
@@ -298,8 +373,10 @@ namespace ComicReader.Views
             }, DispatcherPriority.Loaded);
         }
 
-        private void ReleaseScrollSuppression()
+        private void ReleaseScrollSuppression(bool extendWindow = true)
         {
+            if (extendWindow)
+                _suppressScrollUntilUtc = DateTime.UtcNow.AddMilliseconds(200);
             Dispatcher.UIThread.Post(() => _isSuppressingScrollTracking = false, DispatcherPriority.Background);
         }
 
@@ -307,16 +384,18 @@ namespace ComicReader.Views
         private void OnPageContainerSizeChanged(object? sender, SizeChangedEventArgs e)
         {
             if (sender is not Control element) return;
+            if (element.DataContext is not Models.ComicPageItem pageItem) return;
 
-            if (element.DataContext is Models.ComicPageItem pageItem &&
-                pageItem.Image is not null &&
-                e.NewSize.Height > pageItem.PlaceholderHeight)
+            if (pageItem.Image is not null && e.NewSize.Height > pageItem.PlaceholderHeight)
             {
                 pageItem.PlaceholderHeight = e.NewSize.Height;
             }
 
-            if (_isSuppressingScrollTracking) return;
-            if (Math.Abs(e.NewSize.Height - e.PreviousSize.Height) < 0.5) return;
+            // Ignore initial realization/measure (PreviousSize == 0) to prevent runaway scroll-to-bottom cascades.
+            if (_isSuppressingScrollTracking || e.PreviousSize.Height < 1.0 || pageItem.Image is null) return;
+
+            double delta = e.NewSize.Height - e.PreviousSize.Height;
+            if (delta < 0.5) return;
 
             ScrollViewer? sv = AttachScrollViewer();
             if (sv is null) return;
@@ -324,10 +403,7 @@ namespace ComicReader.Views
             Point? topInViewport = element.TranslatePoint(new Point(0, 0), sv);
             if (topInViewport is { Y: < 0 })
             {
-                double delta = e.NewSize.Height - e.PreviousSize.Height;
-                _isSuppressingScrollTracking = true;
-                sv.Offset = new Vector(sv.Offset.X, Math.Max(0, sv.Offset.Y + delta));
-                ReleaseScrollSuppression();
+                sv.Offset = new Vector(sv.Offset.X, Math.Max(0, sv.Offset.Y + delta * ZoomLevel));
             }
         }
 
@@ -419,6 +495,10 @@ namespace ComicReader.Views
             if (!e.KeyModifiers.HasFlag(KeyModifiers.Control)) return;
             if (DataContext is not ReaderViewModel vm) return;
 
+            ScrollViewer? sv = AttachScrollViewer();
+            if (sv is not null)
+                _pendingZoomAnchor = e.GetPosition(sv);
+
             if (e.Delta.Y > 0) vm.ZoomInCommand.Execute(null);
             else if (e.Delta.Y < 0) vm.ZoomOutCommand.Execute(null);
 
@@ -429,21 +509,37 @@ namespace ComicReader.Views
         private void OnScrollViewerScrollChanged(object? sender, ScrollChangedEventArgs e)
         {
             if (_isSuppressingScrollTracking || _isDraggingSlider) return;
+            if (DateTime.UtcNow < _suppressScrollUntilUtc) return;
+            if (Math.Abs(e.OffsetDelta.Y) < 0.5 && Math.Abs(e.OffsetDelta.X) < 0.5) return;
             if (DataContext is not ReaderViewModel vm || vm.TotalPages <= 0) return;
 
-            _scrollDebounceTimer?.Stop();
-            _scrollDebounceTimer?.Start();
+            DateTime now = DateTime.UtcNow;
+            if ((now - _lastScrollProcessUtc).TotalMilliseconds >= ScrollThrottleMs)
+            {
+                ProcessScrollPosition(vm);
+            }
+            else if (_scrollDebounceTimer is not null && !_scrollDebounceTimer.IsEnabled)
+            {
+                _scrollDebounceTimer.Start();
+            }
         }
 
         private void OnScrollDebounceTick(object? sender, EventArgs e)
         {
             _scrollDebounceTimer?.Stop();
             if (_isSuppressingScrollTracking || _isDraggingSlider) return;
+            if (DateTime.UtcNow < _suppressScrollUntilUtc) return;
             if (DataContext is not ReaderViewModel vm || vm.TotalPages <= 0) return;
 
+            ProcessScrollPosition(vm);
+        }
+
+        private void ProcessScrollPosition(ReaderViewModel vm)
+        {
             ScrollViewer? sv = AttachScrollViewer();
             if (sv is null) return;
 
+            _lastScrollProcessUtc = DateTime.UtcNow;
             (int page, double localRatio) = DetectCurrentPage(sv);
             double scrollable = Math.Max(0, sv.Extent.Height - sv.Viewport.Height);
             double globalRatio = scrollable > 0 ? sv.Offset.Y / scrollable : 0.0;
@@ -456,6 +552,8 @@ namespace ComicReader.Views
             int    fallback = Math.Max(1, _subscribedViewModel?.CurrentPage ?? 1);
             int    best     = -1;
             double bestRatio = 0.0;
+            double bestDist  = double.MaxValue;
+            double viewportCenterY = sv.Viewport.Height * 0.5;
 
             foreach (Control container in PagesListBox.GetRealizedContainers())
             {
@@ -464,13 +562,20 @@ namespace ComicReader.Views
                 if (!tl.HasValue) continue;
 
                 double h      = container.Bounds.Height;
-                double bottom = tl.Value.Y + h;
-                if (bottom < 0) continue;
+                double top    = tl.Value.Y;
+                double bottom = top + h;
+                if (bottom < 0 || top > sv.Viewport.Height) continue;
 
-                if (best == -1 || item.PageNumber < best)
+                // Prefer the page containing the viewport center; otherwise closest to center.
+                double dist = (viewportCenterY >= top && viewportCenterY <= bottom)
+                    ? 0.0
+                    : Math.Min(Math.Abs(top - viewportCenterY), Math.Abs(bottom - viewportCenterY));
+
+                if (best == -1 || dist < bestDist)
                 {
                     best      = item.PageNumber;
-                    bestRatio = h > 0 ? Math.Clamp(-tl.Value.Y / h, 0.0, 1.0) : 0.0;
+                    bestDist  = dist;
+                    bestRatio = h > 0 ? Math.Clamp(-top / h, 0.0, 1.0) : 0.0;
                 }
             }
 
@@ -515,8 +620,37 @@ namespace ComicReader.Views
         // ── slider interaction ─────────────────────────────────────────────────
         private void OnPageSliderPointerPressed(object? sender, PointerPressedEventArgs e)
         {
-            _isDraggingSlider = true;
+            if (_subscribedViewModel is null || _subscribedViewModel.TotalPages <= 0) return;
+
+            bool isThumb = e.Source is Visual src && src.FindAncestorOfType<Thumb>(includeSelf: true) is not null;
+            if (isThumb)
+            {
+                _isDraggingSlider = true;
+                _sliderDebounceTimer?.Stop();
+                return;
+            }
+
+            // Track click: compute exact target page from click X position and navigate immediately.
+            Visual relativeTarget = PageSlider;
+            Track? track = PageSlider.GetVisualDescendants().OfType<Track>().FirstOrDefault();
+            if (track is not null && track.Bounds.Width > 0)
+            {
+                relativeTarget = track;
+            }
+
+            double width = relativeTarget.Bounds.Width;
+            if (width <= 0) return;
+
+            double ratio = Math.Clamp(e.GetPosition(relativeTarget).X / width, 0.0, 1.0);
+            double min = PageSlider.Minimum;
+            double max = Math.Max(min, PageSlider.Maximum);
+            int targetPage = Math.Clamp((int)Math.Round(min + ratio * (max - min)), 1, _subscribedViewModel.TotalPages);
+
+            _isDraggingSlider = false;
             _sliderDebounceTimer?.Stop();
+            PageSlider.Value = targetPage;
+            _subscribedViewModel.NavigateToPage(targetPage);
+            e.Handled = true;
         }
 
         private void OnPageSliderDragStarted(object? sender, VectorEventArgs e)
@@ -572,9 +706,8 @@ namespace ComicReader.Views
                 1,
                 Math.Max(1, _subscribedViewModel.TotalPages));
 
-            // Always navigate so scroll-position is restored even if page number matches
-            // (e.g., user clicked same page bookmark on the track).
-            _subscribedViewModel.GoToPageCommand.Execute(target);
+            // Always navigate via unified JumpToPage so scroll-position is restored even if page number matches.
+            _subscribedViewModel.JumpToPage(target);
         }
 
         // ── helpers ────────────────────────────────────────────────────────────

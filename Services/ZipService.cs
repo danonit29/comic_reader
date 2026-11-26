@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
@@ -7,6 +8,7 @@ using System.Threading.Tasks;
 using Avalonia.Media.Imaging;
 using ComicReader.Helpers;
 using ComicReader.Services.Interfaces;
+using ComicReader.Services.Native;
 
 namespace ComicReader.Services
 {
@@ -101,13 +103,24 @@ namespace ComicReader.Services
 
         private sealed class ZipReadSession : IComicReadSession
         {
-            private readonly ZipArchive _archive;
-            private readonly List<ZipArchiveEntry> _entries;
+            private readonly ZipArchive? _archive;
+            private readonly List<ZipArchiveEntry>? _entries;
             private readonly object _archiveLock = new();
+            private IntPtr _nativeSession;
             private bool _disposed;
 
             public ZipReadSession(string filePath)
             {
+                if (RustInterop.IsAvailable)
+                {
+                    _nativeSession = RustInterop.open_document(filePath);
+                    if (_nativeSession != IntPtr.Zero)
+                    {
+                        PageCount = RustInterop.get_page_count(_nativeSession);
+                        return;
+                    }
+                }
+
                 _archive = ZipFile.OpenRead(filePath);
                 _entries = GetSortedImageEntries(_archive);
                 PageCount = _entries.Count;
@@ -123,7 +136,14 @@ namespace ComicReader.Services
                 return Task.Run(() =>
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (pageIndex < 0 || pageIndex >= _entries.Count) return null;
+
+                    if (_nativeSession != IntPtr.Zero)
+                    {
+                        if (_disposed) return null;
+                        return RustInterop.RenderPageToBitmap(_nativeSession, pageIndex, dpi);
+                    }
+
+                    if (_entries is null || pageIndex < 0 || pageIndex >= _entries.Count) return null;
 
                     byte[] imageBytes;
                     lock (_archiveLock)
@@ -142,7 +162,14 @@ namespace ComicReader.Services
                 {
                     if (_disposed) return;
                     _disposed = true;
-                    _archive.Dispose();
+
+                    if (_nativeSession != IntPtr.Zero)
+                    {
+                        RustInterop.close_document(_nativeSession);
+                        _nativeSession = IntPtr.Zero;
+                    }
+
+                    _archive?.Dispose();
                 }
             }
         }

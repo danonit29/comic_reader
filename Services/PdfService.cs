@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Avalonia.Media.Imaging;
 using ComicReader.Helpers;
 using ComicReader.Services.Interfaces;
+using ComicReader.Services.Native;
 using Docnet.Core;
 using Docnet.Core.Converters;
 using Docnet.Core.Models;
@@ -105,6 +106,7 @@ namespace ComicReader.Services
         private sealed class PdfReadSession : IComicReadSession
         {
             private readonly string _filePath;
+            private IntPtr _nativeSession;
             private IDocReader? _docReader;
             private double _loadedScalingFactor;
             private bool _disposed;
@@ -113,6 +115,16 @@ namespace ComicReader.Services
             {
                 _filePath = filePath;
                 _loadedScalingFactor = AppConstants.DefaultRenderDpi / 72.0;
+
+                if (RustInterop.IsAvailable)
+                {
+                    _nativeSession = RustInterop.open_document(filePath);
+                    if (_nativeSession != IntPtr.Zero)
+                    {
+                        PageCount = RustInterop.get_page_count(_nativeSession);
+                        return;
+                    }
+                }
 
                 lock (DocnetLock)
                 {
@@ -131,6 +143,13 @@ namespace ComicReader.Services
                 return Task.Run(() =>
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+
+                    if (_nativeSession != IntPtr.Zero)
+                    {
+                        if (_disposed) return null;
+                        return RustInterop.RenderPageToBitmap(_nativeSession, pageIndex, dpi);
+                    }
+
                     double requestedScale = Math.Max(0.5, dpi / 72.0);
                     bool lockTaken = false;
                     try
@@ -164,6 +183,15 @@ namespace ComicReader.Services
 
             public void Dispose()
             {
+                if (_nativeSession != IntPtr.Zero)
+                {
+                    if (_disposed) return;
+                    _disposed = true;
+                    RustInterop.close_document(_nativeSession);
+                    _nativeSession = IntPtr.Zero;
+                    return;
+                }
+
                 lock (DocnetLock)
                 {
                     if (_disposed) return;

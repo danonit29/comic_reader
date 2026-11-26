@@ -32,6 +32,14 @@ namespace ComicReader.Helpers
             }
         }
 
+        public bool TryGet(int pageIndex, out Bitmap? bitmap)
+        {
+            lock (_syncLock)
+            {
+                return _cache.TryGetValue(pageIndex, out bitmap);
+            }
+        }
+
         public void Set(int pageIndex, Bitmap bitmap)
         {
             Bitmap? replaced = null;

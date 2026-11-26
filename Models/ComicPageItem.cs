@@ -20,7 +20,7 @@ namespace ComicReader.Models
         private bool _isBookmarked;
 
         [ObservableProperty]
-        private double _placeholderHeight = 400.0;
+        private double _placeholderHeight = 900.0;
 
         /// <summary>
         /// Formatted bookmark badge text (e.g., "Page 12 Bookmarked").

@@ -21,18 +21,19 @@ namespace ComicReader.ViewModels
     /// </summary>
     public partial class ReaderViewModel : ObservableObject
     {
-        private const int PreloadBehindCount = 3;
-        private const int PreloadAheadCount  = 4;
+        private const int PreloadBehindCount = 5;
+        private const int PreloadAheadCount  = 5;
 
         private readonly IComicReaderFactory _readerFactory;
         private readonly IStorageService _storageService;
         private readonly IBookmarkService _bookmarkService;
-        private readonly ImageCacheManager _imageCache = new(keepBehind: 4, keepAhead: 6);
+        private readonly ImageCacheManager _imageCache = new(keepBehind: 5, keepAhead: 5);
         private readonly SemaphoreSlim _preloadConcurrency = new(3, 3);
         private readonly ConcurrentDictionary<int, byte> _inFlightPages = new();
         private readonly object _windowStateLock = new();
         private long _windowGeneration;
         private int _activeCenterIndex = -1;
+        private int _scrollDirection = 1; // +1 = forward/down, -1 = backward/up
         private CancellationTokenSource? _loadPageCts;
         private CancellationTokenSource? _saveDebounceCts;
         private CancellationTokenSource? _toastCts;
@@ -198,6 +199,7 @@ namespace ComicReader.ViewModels
 
             if (clampedPage != CurrentPage)
             {
+                _scrollDirection = clampedPage >= CurrentPage ? 1 : -1;
                 CurrentPage = clampedPage;
             }
 
@@ -253,13 +255,18 @@ namespace ComicReader.ViewModels
         }
 
         /// <summary>
-        /// Navigates immediately to the given 1-based page number (e.g., after slider drag/click release).
-        /// Cancels any previous in-flight page loading so the target page renders immediately.
+        /// Unified navigation entry point (slider, Next/Prev, keyboard, direct page input).
+        /// Cancels stale loads, displays cached page immediately or shows loading indicator, and loads window.
         /// </summary>
-        public void NavigateToPage(int pageNumber)
+        public void JumpToPage(int pageNumber)
         {
             _ = GoToPageAsync(pageNumber);
         }
+
+        /// <summary>
+        /// Navigates immediately to the given 1-based page number.
+        /// </summary>
+        public void NavigateToPage(int pageNumber) => JumpToPage(pageNumber);
 
         /// <summary>
         /// Navigates to a specific 1-based page number, cancels stale loads, loads its window, and persists progress.
@@ -291,12 +298,23 @@ namespace ComicReader.ViewModels
             await SaveProgressAsync();
         }
 
+        [ObservableProperty]
+        private bool _isFitWidth = true;
+
+        [ObservableProperty]
+        private bool _isFitPage;
+
+        public event Action? FitWidthRequested;
+        public event Action? FitPageRequested;
+
         /// <summary>
         /// Increases the zoom factor up to the configured maximum.
         /// </summary>
         [RelayCommand]
         private void ZoomIn()
         {
+            IsFitWidth = false;
+            IsFitPage = false;
             ApplyZoom(Math.Min(AppConstants.MaxZoomLevel, ZoomLevel + AppConstants.ZoomStep));
         }
 
@@ -306,14 +324,49 @@ namespace ComicReader.ViewModels
         [RelayCommand]
         private void ZoomOut()
         {
+            IsFitWidth = false;
+            IsFitPage = false;
             ApplyZoom(Math.Max(AppConstants.MinZoomLevel, ZoomLevel - AppConstants.ZoomStep));
         }
 
         /// <summary>
-        /// Resets zoom back to 100%.
+        /// Resets zoom back to 100% (Fit Width).
         /// </summary>
         [RelayCommand]
-        private void ResetZoom() => ApplyZoom(AppConstants.DefaultZoomLevel);
+        private void ResetZoom()
+        {
+            IsFitWidth = true;
+            IsFitPage = false;
+            ApplyZoom(AppConstants.DefaultZoomLevel);
+        }
+
+        [RelayCommand]
+        private void FitWidth()
+        {
+            IsFitWidth = true;
+            IsFitPage = false;
+            FitWidthRequested?.Invoke();
+        }
+
+        [RelayCommand]
+        private void FitPage()
+        {
+            IsFitWidth = false;
+            IsFitPage = true;
+            FitPageRequested?.Invoke();
+        }
+
+        public void SetZoomFromView(double newZoom, bool preserveFocal = true)
+        {
+            double clamped = Math.Clamp(newZoom, AppConstants.MinZoomLevel, AppConstants.MaxZoomLevel);
+            double oldZoom = ZoomLevel;
+            if (Math.Abs(clamped - oldZoom) < 0.001) return;
+
+            if (preserveFocal)
+                ZoomChanging?.Invoke(oldZoom, clamped);
+
+            ZoomLevel = clamped;
+        }
 
         private async void ApplyZoom(double newZoom)
         {
@@ -459,7 +512,7 @@ namespace ComicReader.ViewModels
 
             lock (_windowStateLock)
             {
-                if (cancelPrevious || (_activeCenterIndex >= 0 && Math.Abs(clampedCenter - _activeCenterIndex) > 3))
+                if (cancelPrevious || (_activeCenterIndex >= 0 && Math.Abs(clampedCenter - _activeCenterIndex) > 2))
                 {
                     _loadPageCts?.Cancel();
                     _loadPageCts?.Dispose();
@@ -482,6 +535,20 @@ namespace ComicReader.ViewModels
             EvictDistantPages(clampedCenter);
 
             bool centerNeedsLoad = Pages[clampedCenter].Image is null;
+            if (centerNeedsLoad && _imageCache.TryGet(clampedCenter, out Bitmap? cached) && cached is not null)
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (generation == Interlocked.Read(ref _windowGeneration) &&
+                        clampedCenter < Pages.Count &&
+                        Pages[clampedCenter].Image is null)
+                    {
+                        Pages[clampedCenter].Image = cached;
+                    }
+                });
+                centerNeedsLoad = false;
+            }
+
             if (centerNeedsLoad)
             {
                 Dispatcher.UIThread.Post(() =>
@@ -515,9 +582,9 @@ namespace ComicReader.ViewModels
                         RestoreExactPagePositionRequested?.Invoke(clampedCenter + 1, _currentPageLocalRatio));
                 }
 
-                // Preload nearby pages in background only after target page is ready.
+                // Preload nearby pages in background, prioritizing the user's scroll direction.
                 var preloadTasks = new List<Task>();
-                foreach (int index in BuildWindowOrder(clampedCenter, Pages.Count))
+                foreach (int index in BuildWindowOrder(clampedCenter, Pages.Count, _scrollDirection))
                 {
                     if (token.IsCancellationRequested || generation != Interlocked.Read(ref _windowGeneration))
                     {
@@ -630,19 +697,24 @@ namespace ComicReader.ViewModels
             });
         }
 
-        private static IEnumerable<int> BuildWindowOrder(int centerIndex, int totalCount)
+        private static IEnumerable<int> BuildWindowOrder(int centerIndex, int totalCount, int scrollDirection = 1)
         {
             int maxOffset = Math.Max(PreloadAheadCount, PreloadBehindCount);
             for (int offset = 1; offset <= maxOffset; offset++)
             {
-                if (offset <= PreloadAheadCount && centerIndex + offset < totalCount)
+                if (scrollDirection >= 0)
                 {
-                    yield return centerIndex + offset;
+                    if (offset <= PreloadAheadCount && centerIndex + offset < totalCount)
+                        yield return centerIndex + offset;
+                    if (offset <= PreloadBehindCount && centerIndex - offset >= 0)
+                        yield return centerIndex - offset;
                 }
-
-                if (offset <= PreloadBehindCount && centerIndex - offset >= 0)
+                else
                 {
-                    yield return centerIndex - offset;
+                    if (offset <= PreloadBehindCount && centerIndex - offset >= 0)
+                        yield return centerIndex - offset;
+                    if (offset <= PreloadAheadCount && centerIndex + offset < totalCount)
+                        yield return centerIndex + offset;
                 }
             }
         }
