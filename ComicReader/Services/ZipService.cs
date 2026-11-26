@@ -128,10 +128,53 @@ namespace ComicReader.Services
 
             public int PageCount { get; }
 
+            public Task<byte[]?> ExtractRawBytesAsync(int pageIndex, CancellationToken cancellationToken = default)
+            {
+                return Task.Run<byte[]?>(() =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (_disposed) return null;
+
+                    if (_nativeSession != IntPtr.Zero)
+                    {
+                        return RustInterop.GetPageRawBytes(_nativeSession, pageIndex);
+                    }
+
+                    if (_entries is null || pageIndex < 0 || pageIndex >= _entries.Count) return null;
+                    lock (_archiveLock)
+                    {
+                        if (_disposed) return null;
+                        return ReadEntryBytes(_entries[pageIndex]);
+                    }
+                }, cancellationToken);
+            }
+
+            public Task<Bitmap?> DecodeFromRawBytesAsync(byte[] rawBytes, CancellationToken cancellationToken = default)
+            {
+                return Task.Run<Bitmap?>(() =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return ImageHelper.DecodeFromBytes(rawBytes, null);
+                }, cancellationToken);
+            }
+
             public Task<Bitmap?> RenderPageAsync(
                 int pageIndex,
                 int dpi = AppConstants.DefaultRenderDpi,
                 CancellationToken cancellationToken = default)
+                => RenderCoreAsync(pageIndex, dpi, AppConstants.MaxReaderDecodeWidth, cancellationToken);
+
+            public Task<Bitmap?> RenderPreviewAsync(
+                int pageIndex,
+                int maxWidth = AppConstants.PreviewDecodeWidth,
+                CancellationToken cancellationToken = default)
+                => RenderCoreAsync(pageIndex, AppConstants.PreviewRenderDpi, maxWidth, cancellationToken);
+
+            private Task<Bitmap?> RenderCoreAsync(
+                int pageIndex,
+                int dpi,
+                int maxWidth,
+                CancellationToken cancellationToken)
             {
                 return Task.Run(() =>
                 {
@@ -140,7 +183,7 @@ namespace ComicReader.Services
                     if (_nativeSession != IntPtr.Zero)
                     {
                         if (_disposed) return null;
-                        return RustInterop.RenderPageToBitmap(_nativeSession, pageIndex, dpi);
+                        return RustInterop.RenderPageToBitmap(_nativeSession, pageIndex, dpi, (uint)maxWidth);
                     }
 
                     if (_entries is null || pageIndex < 0 || pageIndex >= _entries.Count) return null;
@@ -152,7 +195,9 @@ namespace ComicReader.Services
                         imageBytes = ReadEntryBytes(_entries[pageIndex]);
                     }
 
-                    return ImageHelper.DecodeForReader(imageBytes);
+                    return maxWidth > 0
+                        ? ImageHelper.DecodeFromBytes(imageBytes, maxWidth)
+                        : ImageHelper.DecodeFromBytes(imageBytes, null);
                 }, cancellationToken);
             }
 

@@ -20,7 +20,7 @@ namespace ComicReader.Views
         // ── constants ──────────────────────────────────────────────────────────
         private const double AutoScrollDeadZone   = 8.0;
         private const double AutoScrollSpeedFactor = 0.28;
-        private const int    SliderDebounceMs      = 120;
+        private const int    SliderDebounceMs      = 80;
         private const int    ScrollThrottleMs      = 80;
 
         // ── private state ──────────────────────────────────────────────────────
@@ -64,6 +64,24 @@ namespace ComicReader.Views
             set => SetValue(BasePageWidthProperty, value);
         }
 
+        public static readonly StyledProperty<bool> IsCompactLayoutProperty =
+            AvaloniaProperty.Register<ReaderView, bool>(nameof(IsCompactLayout), false);
+
+        public bool IsCompactLayout
+        {
+            get => GetValue(IsCompactLayoutProperty);
+            set => SetValue(IsCompactLayoutProperty, value);
+        }
+
+        public static readonly StyledProperty<Thickness> SafeAreaPaddingProperty =
+            AvaloniaProperty.Register<ReaderView, Thickness>(nameof(SafeAreaPadding), default);
+
+        public Thickness SafeAreaPadding
+        {
+            get => GetValue(SafeAreaPaddingProperty);
+            set => SetValue(SafeAreaPaddingProperty, value);
+        }
+
         /// <summary>Strongly-typed ViewModel for use in DataTemplate CompiledBindings.</summary>
         public ReaderViewModel? ViewModel => DataContext as ReaderViewModel;
 
@@ -76,6 +94,12 @@ namespace ComicReader.Views
             Loaded             += OnLoaded;
             Unloaded           += OnUnloaded;
             KeyDown            += OnReaderKeyDown;
+            SizeChanged        += (_, e) =>
+            {
+                bool compact = e.NewSize.Width > 0 && e.NewSize.Width < 760;
+                if (IsCompactLayout != compact)
+                    IsCompactLayout = compact;
+            };
 
             // Attach scroll-viewer after template is applied.
             PagesListBox.TemplateApplied += (_, _) => AttachScrollViewer();
@@ -113,6 +137,12 @@ namespace ComicReader.Views
         private void OnLoaded(object? sender, RoutedEventArgs e)
         {
             AttachScrollViewer();
+            IsCompactLayout = Bounds.Width > 0 && Bounds.Width < 760;
+            if (TopLevel.GetTopLevel(this)?.InsetsManager is { } insets)
+            {
+                SafeAreaPadding = insets.SafeAreaPadding;
+                insets.SafeAreaChanged += (_, args) => SafeAreaPadding = args.SafeAreaPadding;
+            }
         }
 
         private void OnDataContextChanged(object? sender, EventArgs e)
@@ -221,6 +251,10 @@ namespace ComicReader.Views
         // ── page-width calculation & window resize preservation ─────────────────
         private void OnPagesListBoxSizeChanged(object? sender, SizeChangedEventArgs e)
         {
+            bool compact = Bounds.Width > 0 && Bounds.Width < 760;
+            if (IsCompactLayout != compact)
+                IsCompactLayout = compact;
+
             if (Math.Abs(e.NewSize.Width - e.PreviousSize.Width) < 1.0 &&
                 Math.Abs(e.NewSize.Height - e.PreviousSize.Height) < 1.0)
             {
@@ -298,7 +332,37 @@ namespace ComicReader.Views
             Point anchor = _pendingZoomAnchor ?? new Point(sv.Viewport.Width * 0.5, sv.Viewport.Height * 0.5);
             _pendingZoomAnchor = null;
 
-            double contentY = (sv.Offset.Y + anchor.Y) / oldZoom;
+            // Find the exact realized page container at `anchor.Y` and record the local ratio inside it.
+            int anchorPageIndex = -1;
+            double ratioInPage = 0.0;
+            double bestDist = double.MaxValue;
+
+            foreach (Control container in PagesListBox.GetRealizedContainers())
+            {
+                if (container.DataContext is not Models.ComicPageItem item) continue;
+                Point? tl = container.TranslatePoint(new Point(0, 0), sv);
+                if (!tl.HasValue) continue;
+
+                double h = container.Bounds.Height;
+                double top = tl.Value.Y;
+                double bottom = top + h;
+                double dist = (anchor.Y >= top && anchor.Y <= bottom)
+                    ? 0.0
+                    : Math.Min(Math.Abs(top - anchor.Y), Math.Abs(bottom - anchor.Y));
+
+                if (anchorPageIndex == -1 || dist < bestDist)
+                {
+                    bestDist = dist;
+                    anchorPageIndex = item.PageNumber - 1;
+                    ratioInPage = h > 0 ? (anchor.Y - top) / h : 0.0;
+                }
+            }
+
+            if (anchorPageIndex < 0 && _subscribedViewModel is not null && _subscribedViewModel.TotalPages > 0)
+            {
+                anchorPageIndex = Math.Clamp(_subscribedViewModel.CurrentPage - 1, 0, _subscribedViewModel.TotalPages - 1);
+            }
+
             double contentX = (sv.Offset.X + anchor.X) / oldZoom;
 
             _isSuppressingScrollTracking = true;
@@ -306,8 +370,30 @@ namespace ComicReader.Views
             Dispatcher.UIThread.Post(() =>
             {
                 sv.InvalidateMeasure();
-                double targetY = Math.Max(0, contentY * newZoom - anchor.Y);
+
                 double targetX = Math.Max(0, contentX * newZoom - anchor.X);
+                double targetY = sv.Offset.Y;
+
+                if (anchorPageIndex >= 0 && _subscribedViewModel is not null && anchorPageIndex < _subscribedViewModel.Pages.Count)
+                {
+                    Control? container = PagesListBox.ContainerFromIndex(anchorPageIndex);
+                    if (container is null)
+                    {
+                        PagesListBox.ScrollIntoView(_subscribedViewModel.Pages[anchorPageIndex]);
+                        container = PagesListBox.ContainerFromIndex(anchorPageIndex);
+                    }
+
+                    if (container is not null)
+                    {
+                        Point? newTl = container.TranslatePoint(new Point(0, 0), sv);
+                        if (newTl.HasValue)
+                        {
+                            double newSpotY = newTl.Value.Y + ratioInPage * container.Bounds.Height;
+                            targetY = Math.Max(0, sv.Offset.Y + (newSpotY - anchor.Y));
+                        }
+                    }
+                }
+
                 sv.Offset = new Vector(targetX, targetY);
                 ReleaseScrollSuppression();
             }, DispatcherPriority.Loaded);
@@ -342,8 +428,23 @@ namespace ComicReader.Views
                     if (container is not null)
                     {
                         Point? pt = container.TranslatePoint(new Point(0, 0), sv);
-                        if (pt.HasValue)
+                        if (pt.HasValue && Math.Abs(pt.Value.Y) > 2.0)
                             sv.Offset = new Vector(sv.Offset.X, Math.Max(0, sv.Offset.Y + pt.Value.Y));
+                    }
+                    else
+                    {
+                        // Retry one frame later if container was still virtualized during a far jump.
+                        Dispatcher.UIThread.Post(() =>
+                        {
+                            PagesListBox.ScrollIntoView(item);
+                            Control? c2 = PagesListBox.ContainerFromIndex(pageIndex);
+                            if (c2 is not null && AttachScrollViewer() is { } sv2)
+                            {
+                                Point? pt2 = c2.TranslatePoint(new Point(0, 0), sv2);
+                                if (pt2.HasValue)
+                                    sv2.Offset = new Vector(sv2.Offset.X, Math.Max(0, sv2.Offset.Y + pt2.Value.Y));
+                            }
+                        }, DispatcherPriority.Background);
                     }
                 }
                 ReleaseScrollSuppression();
@@ -683,22 +784,31 @@ namespace ComicReader.Views
 
         private void OnPageSliderDragCompleted(object? sender, VectorEventArgs e)
         {
-            // Thumb drag released → start debounce countdown.
-            ScheduleSliderDebounce();
+            // Thumb drag released → navigate immediately with zero extra delay.
+            _sliderDebounceTimer?.Stop();
+            _isDraggingSlider = false;
+            CommitSliderNavigation();
         }
 
         private void OnPageSliderPointerReleased(object? sender, PointerReleasedEventArgs e)
         {
-            // Fires for BOTH track-click (DragCompleted not raised) and thumb-release (DragCompleted already raised).
-            // ScheduleSliderDebounce is idempotent: calling it twice just resets the timer.
+            // Fires for BOTH track-click and thumb-release → navigate immediately on release.
             if (_isDraggingSlider)
-                ScheduleSliderDebounce();
+            {
+                _sliderDebounceTimer?.Stop();
+                _isDraggingSlider = false;
+                CommitSliderNavigation();
+            }
         }
 
         private void OnPageSliderPointerCaptureLost(object? sender, PointerCaptureLostEventArgs e)
         {
             if (_isDraggingSlider)
-                ScheduleSliderDebounce();
+            {
+                _sliderDebounceTimer?.Stop();
+                _isDraggingSlider = false;
+                CommitSliderNavigation();
+            }
         }
 
         private void ScheduleSliderDebounce()
@@ -711,8 +821,22 @@ namespace ComicReader.Views
         private void OnSliderDebounceTick(object? sender, EventArgs e)
         {
             _sliderDebounceTimer?.Stop();
-            _isDraggingSlider = false;
-            CommitSliderNavigation();
+            if (_subscribedViewModel is null) return;
+
+            int target = Math.Clamp(
+                (int)Math.Round(PageSlider.Value),
+                1,
+                Math.Max(1, _subscribedViewModel.TotalPages));
+
+            if (_isDraggingSlider)
+            {
+                // User paused briefly mid-drag: pre-load just the single target page so release feels instant.
+                _subscribedViewModel.PreviewLoadSinglePage(target);
+            }
+            else
+            {
+                _subscribedViewModel.JumpToPage(target);
+            }
         }
 
         /// <summary>

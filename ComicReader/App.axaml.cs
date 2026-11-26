@@ -19,6 +19,11 @@ namespace ComicReader
     {
         private IServiceProvider? _serviceProvider;
 
+        /// <summary>
+        /// Optional platform-provided native PDF renderer (Windows.Data.Pdf on Windows, PdfRenderer on Android).
+        /// </summary>
+        public static Func<INativePdfRenderer?>? NativePdfRendererFactory { get; set; }
+
         public override void Initialize()
         {
             AvaloniaXamlLoader.Load(this);
@@ -44,7 +49,7 @@ namespace ComicReader
 
         private static void ConfigureServices(IServiceCollection services)
         {
-            services.AddSingleton<PdfService>();
+            services.AddSingleton(_ => new PdfService(NativePdfRendererFactory?.Invoke()));
             services.AddSingleton<ZipService>();
             services.AddSingleton<IComicReaderFactory, ComicReaderFactory>();
             services.AddSingleton<IFileService>(sp => new FileService(() =>

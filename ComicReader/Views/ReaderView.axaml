@@ -14,7 +14,7 @@
 
     <UserControl.Styles>
         <!-- Strip all ListBoxItem selection/hover/focus visuals completely -->
-        <Style Selector="ListBox#PagesListBox > ListBoxItem">
+        <Style Selector="ListBox#PagesListBox ListBoxItem">
             <Setter Property="Padding" Value="0" />
             <Setter Property="Margin" Value="0" />
             <Setter Property="HorizontalContentAlignment" Value="Center" />
@@ -36,6 +36,21 @@
                 </ControlTemplate>
             </Setter>
         </Style>
+        <Style Selector="ListBox#PagesListBox ListBoxItem:pointerover,
+                         ListBox#PagesListBox ListBoxItem:selected,
+                         ListBox#PagesListBox ListBoxItem:pressed,
+                         ListBox#PagesListBox ListBoxItem:focus">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+        </Style>
+        <Style Selector="ListBox#PagesListBox ListBoxItem:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         ListBox#PagesListBox ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter,
+                         ListBox#PagesListBox ListBoxItem:selected:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         ListBox#PagesListBox ListBoxItem:pressed /template/ ContentPresenter#PART_ContentPresenter,
+                         ListBox#PagesListBox ListBoxItem:focus /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+        </Style>
 
         <!-- Page slider red accent style -->
         <Style Selector="Slider#PageSlider">
@@ -52,11 +67,13 @@
         </Style>
     </UserControl.Styles>
 
-    <Grid RowDefinitions="52,*,56">
+    <Grid
+        Margin="{CompiledBinding SafeAreaPadding, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
+        RowDefinitions="52,*,56">
         <!-- Reader Top Toolbar -->
         <Border
             Grid.Row="0"
-            Padding="16,0"
+            Padding="10,0"
             Background="{StaticResource SidebarBackgroundBrush}"
             BorderBrush="{StaticResource SubtleBorderBrush}"
             BorderThickness="0,0,0,1">
@@ -67,12 +84,16 @@
                     Command="{CompiledBinding CloseReaderCommand}">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <PathIcon Width="15" Height="15" Data="{StaticResource IconArrowLeft}" Foreground="White" />
-                        <TextBlock VerticalAlignment="Center" Text="Back to Library" />
+                        <TextBlock
+                            VerticalAlignment="Center"
+                            IsVisible="{CompiledBinding !IsCompactLayout, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
+                            Text="Back to Library" />
                     </StackPanel>
                 </Button>
 
                 <TextBlock
                     Grid.Column="1"
+                    Margin="8,0"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center"
                     FontSize="15"
@@ -105,25 +126,15 @@
 
                     <Button
                         Classes="reader-toolbar-btn"
-                        Command="{CompiledBinding FitWidthCommand}"
-                        Content="Fit W"
-                        ToolTip.Tip="Fit Width" />
-
-                    <Button
-                        Margin="0,0,8,0"
-                        Classes="reader-toolbar-btn"
-                        Command="{CompiledBinding FitPageCommand}"
-                        Content="Fit P"
-                        ToolTip.Tip="Fit Page" />
-
-                    <Button
-                        Classes="reader-toolbar-btn"
                         Classes.bookmarked="{CompiledBinding IsCurrentPageBookmarked}"
                         Command="{CompiledBinding AddBookmarkCommand}"
                         ToolTip.Tip="Bookmark this page">
                         <StackPanel Orientation="Horizontal" Spacing="6">
                             <PathIcon Width="15" Height="15" Data="{StaticResource IconBookmark}" />
-                            <TextBlock VerticalAlignment="Center" Text="Bookmarks" />
+                            <TextBlock
+                                VerticalAlignment="Center"
+                                IsVisible="{CompiledBinding !IsCompactLayout, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
+                                Text="Bookmarks" />
                         </StackPanel>
                     </Button>
                 </StackPanel>
@@ -207,29 +218,30 @@
             </ListBox.ItemTemplate>
         </ListBox>
 
-        <!-- Floating Page Loading Indicator (shown only when target page is not yet cached) -->
+        <!-- Floating Page Loading Indicator (shown immediately when target page is not yet cached) -->
         <Border
             Grid.Row="1"
-            Padding="14,10"
+            ZIndex="50"
+            Padding="14,8"
             HorizontalAlignment="Center"
             VerticalAlignment="Center"
-            Background="#CC1A1A1A"
-            BorderBrush="#33FFFFFF"
+            Background="#D91A1A1A"
+            BorderBrush="{StaticResource AccentRedBrush}"
             BorderThickness="1"
-            CornerRadius="10"
+            CornerRadius="8"
             IsHitTestVisible="False"
             IsVisible="{CompiledBinding IsLoadingPage}">
             <StackPanel Spacing="6">
                 <ProgressBar
-                    Width="120"
-                    Height="4"
+                    Width="110"
+                    Height="3"
                     Foreground="{StaticResource AccentRedBrush}"
                     IsIndeterminate="True" />
                 <TextBlock
                     HorizontalAlignment="Center"
                     FontSize="12"
-                    Foreground="#CCCCCC"
-                    Text="Loading page..." />
+                    Foreground="#E5E5E5"
+                    Text="{CompiledBinding LoadingStatusText}" />
             </StackPanel>
         </Border>
 
@@ -265,7 +277,7 @@
         <!-- Bottom Page Navigation Bar with Slider & Inline Bookmark Markers -->
         <Border
             Grid.Row="2"
-            Padding="16,0"
+            Padding="10,0"
             Background="{StaticResource SidebarBackgroundBrush}"
             BorderBrush="{StaticResource SubtleBorderBrush}"
             BorderThickness="0,1,0,0">
@@ -276,12 +288,15 @@
                     Command="{CompiledBinding PreviousPageCommand}">
                     <StackPanel Orientation="Horizontal" Spacing="6">
                         <PathIcon Width="13" Height="13" Data="{StaticResource IconChevronLeft}" Foreground="White" />
-                        <TextBlock VerticalAlignment="Center" Text="Previous" />
+                        <TextBlock
+                            VerticalAlignment="Center"
+                            IsVisible="{CompiledBinding !IsCompactLayout, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
+                            Text="Previous" />
                     </StackPanel>
                 </Button>
 
                 <!-- Page Slider with Bookmark Icons above Track -->
-                <Grid Grid.Column="1" Margin="18,0" VerticalAlignment="Center" RowDefinitions="12,32,12">
+                <Grid Grid.Column="1" Margin="10,0" VerticalAlignment="Center" RowDefinitions="12,32,12">
                     <ItemsControl
                         Grid.Row="0"
                         Margin="6,0,6,0"
@@ -335,11 +350,11 @@
 
                 <TextBlock
                     Grid.Column="2"
-                    MinWidth="115"
-                    Margin="0,0,16,0"
+                    MinWidth="68"
+                    Margin="0,0,8,0"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center"
-                    FontSize="13"
+                    FontSize="12"
                     FontWeight="Medium"
                     Foreground="White"
                     Text="{CompiledBinding PageIndicatorText}"
@@ -350,7 +365,10 @@
                     Classes="secondary-btn"
                     Command="{CompiledBinding NextPageCommand}">
                     <StackPanel Orientation="Horizontal" Spacing="6">
-                        <TextBlock VerticalAlignment="Center" Text="Next" />
+                        <TextBlock
+                            VerticalAlignment="Center"
+                            IsVisible="{CompiledBinding !IsCompactLayout, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
+                            Text="Next" />
                         <PathIcon Width="13" Height="13" Data="{StaticResource IconChevronRight}" Foreground="White" />
                     </StackPanel>
                 </Button>

@@ -18,6 +18,13 @@ namespace ComicReader.Services.Native
         private const string LibraryName = "comic_engine";
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct NativeBuffer
+        {
+            public IntPtr Data;
+            public nuint Len;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct NativeBitmap
         {
             public IntPtr Data;
@@ -72,7 +79,43 @@ namespace ComicReader.Services.Native
             out NativeBitmap outBitmap);
 
         [LibraryImport(LibraryName)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        internal static partial bool get_page_raw_bytes(
+            IntPtr handle,
+            int pageIndex,
+            out NativeBuffer outBuf);
+
+        [LibraryImport(LibraryName)]
+        internal static partial void free_raw_bytes(ref NativeBuffer buf);
+
+        [LibraryImport(LibraryName)]
         internal static partial void free_bitmap(ref NativeBitmap bitmap);
+
+        /// <summary>
+        /// Extracts compressed page bytes (JPEG/PNG/WebP) from the ZIP archive for lightweight RAM caching.
+        /// </summary>
+        public static byte[]? GetPageRawBytes(IntPtr handle, int pageIndex)
+        {
+            if (handle == IntPtr.Zero || pageIndex < 0) return null;
+            NativeBuffer buf = default;
+            if (!get_page_raw_bytes(handle, pageIndex, out buf))
+            {
+                return null;
+            }
+
+            try
+            {
+                if (buf.Data == IntPtr.Zero || buf.Len == 0) return null;
+                int len = checked((int)buf.Len);
+                byte[] managed = new byte[len];
+                Marshal.Copy(buf.Data, managed, 0, len);
+                return managed;
+            }
+            finally
+            {
+                free_raw_bytes(ref buf);
+            }
+        }
 
         /// <summary>
         /// Decodes/renders a page via Rust into RGBA8888 and copies directly into a WriteableBitmap
@@ -81,12 +124,13 @@ namespace ComicReader.Services.Native
         public static unsafe Bitmap? RenderPageToBitmap(
             IntPtr handle,
             int pageIndex,
-            int dpi = AppConstants.DefaultRenderDpi)
+            int dpi = AppConstants.DefaultRenderDpi,
+            uint maxWidth = AppConstants.MaxReaderDecodeWidth)
         {
             if (handle == IntPtr.Zero || pageIndex < 0) return null;
 
             NativeBitmap nativeBmp = default;
-            if (!get_page_bitmap(handle, pageIndex, (uint)AppConstants.MaxReaderDecodeWidth, out nativeBmp))
+            if (!get_page_bitmap(handle, pageIndex, maxWidth, out nativeBmp))
             {
                 return null;
             }
@@ -102,7 +146,7 @@ namespace ComicReader.Services.Native
 
                 var bitmap = new WriteableBitmap(
                     new PixelSize(width, height),
-                    new Vector(dpi, dpi),
+                    new Vector(96, 96),
                     PixelFormat.Rgba8888,
                     AlphaFormat.Unpremul);
 

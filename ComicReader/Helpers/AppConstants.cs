@@ -17,10 +17,12 @@ namespace ComicReader.Helpers
         public const double DefaultWindowWidth = 1280;
         public const double DefaultWindowHeight = 800;
 
-        public const int DefaultRenderDpi = 150;
+        public const int DefaultRenderDpi = 200;
+        public const int PreviewRenderDpi = 36;
         public const int CoverRenderDpi = 96;
-        public const int CoverDecodeWidth = 300;
-        public const int MaxReaderDecodeWidth = 2000;
+        public const int CoverDecodeWidth = 240;
+        public const int PreviewDecodeWidth = 240;
+        public const int MaxReaderDecodeWidth = 0; // 0 = keep 100% original resolution for Full Quality tier
 
         public const double MinZoomLevel = 0.3;
         public const double MaxZoomLevel = 4.0;

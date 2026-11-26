@@ -3,6 +3,7 @@ using Android.Content.PM;
 using Avalonia;
 using Avalonia.Android;
 using ComicReader;
+using ComicReader.Android.Services;
 
 namespace ComicReader.Android
 {
@@ -16,6 +17,7 @@ namespace ComicReader.Android
     {
         protected override AppBuilder CustomizeAppBuilder(AppBuilder builder)
         {
+            App.NativePdfRendererFactory = static () => new AndroidNativePdfRenderer();
             return base.CustomizeAppBuilder(builder)
                 .WithInterFont();
         }

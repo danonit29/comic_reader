@@ -1,26 +1,31 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Media.Imaging;
 using ComicReader.Helpers;
 using ComicReader.Services.Interfaces;
-using ComicReader.Services.Native;
-using Docnet.Core;
-using Docnet.Core.Converters;
-using Docnet.Core.Models;
-using Docnet.Core.Readers;
+using UglyToad.PdfPig;
+using UglyToad.PdfPig.Content;
 
 namespace ComicReader.Services
 {
     /// <summary>
-    /// Cross-platform PDF rendering service built on Docnet.Core (PDFium) that converts PDF pages
-    /// into Skia-backed Avalonia Bitmaps with session-level caching.
+    /// Cross-platform PDF reader service without PDFium:
+    /// - Fast path for scanned comic PDFs: extracts embedded JPEG/PNG image bytes directly via PdfPig
+    ///   (100% original quality, lock-free RAM compressed byte cache just like ZIP/CBZ).
+    /// - Fallback path for text/vector PDFs: delegates to the OS-native renderer
+    ///   (Windows.Data.Pdf on Windows, android.graphics.pdf.PdfRenderer on Android).
     /// </summary>
     public sealed class PdfService : IComicReaderService
     {
-        // Docnet.Core wraps native PDFium whose state must be synchronized across threads.
-        private static readonly object DocnetLock = new();
-        private static readonly NaiveTransparencyRemover WhiteBackgroundConverter = new(255, 255, 255);
+        private readonly INativePdfRenderer? _nativeRenderer;
+
+        public PdfService(INativePdfRenderer? nativeRenderer = null)
+        {
+            _nativeRenderer = nativeRenderer;
+        }
 
         /// <inheritdoc />
         public Task<IComicReadSession> OpenSessionAsync(string filePath, CancellationToken cancellationToken = default)
@@ -28,7 +33,7 @@ namespace ComicReader.Services
             return Task.Run<IComicReadSession>(() =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                return new PdfReadSession(filePath);
+                return new PdfReadSession(filePath, _nativeRenderer);
             }, cancellationToken);
         }
 
@@ -38,167 +43,167 @@ namespace ComicReader.Services
             return Task.Run(() =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                lock (DocnetLock)
-                {
-                    using IDocReader docReader = DocLib.Instance.GetDocReader(filePath, new PageDimensions(1.0));
-                    return docReader.GetPageCount();
-                }
+                using PdfDocument doc = PdfDocument.Open(filePath);
+                return doc.NumberOfPages;
             }, cancellationToken);
         }
 
         /// <inheritdoc />
-        public Task<Bitmap?> RenderPageAsync(
+        public async Task<Bitmap?> RenderPageAsync(
             string filePath,
             int pageIndex,
             int dpi = AppConstants.DefaultRenderDpi,
             CancellationToken cancellationToken = default)
         {
-            return Task.Run(() =>
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                double scalingFactor = Math.Max(0.5, dpi / 72.0);
-
-                lock (DocnetLock)
-                {
-                    using IDocReader docReader = DocLib.Instance.GetDocReader(filePath, new PageDimensions(scalingFactor));
-                    return RenderFromReader(docReader, pageIndex, dpi);
-                }
-            }, cancellationToken);
+            using IComicReadSession session = await OpenSessionAsync(filePath, cancellationToken).ConfigureAwait(false);
+            return await session.RenderPageAsync(pageIndex, dpi, cancellationToken).ConfigureAwait(false);
         }
 
         /// <inheritdoc />
-        public Task<Bitmap?> ExtractCoverAsync(string filePath, CancellationToken cancellationToken = default)
+        public async Task<Bitmap?> ExtractCoverAsync(string filePath, CancellationToken cancellationToken = default)
         {
-            return Task.Run(() =>
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                lock (DocnetLock)
-                {
-                    using IDocReader docReader = DocLib.Instance.GetDocReader(
-                        filePath,
-                        new PageDimensions(AppConstants.CoverDecodeWidth, AppConstants.CoverDecodeWidth * 2));
-
-                    return RenderFromReader(docReader, 0, AppConstants.CoverRenderDpi);
-                }
-            }, cancellationToken);
+            using IComicReadSession session = await OpenSessionAsync(filePath, cancellationToken).ConfigureAwait(false);
+            return await session.RenderPreviewAsync(0, AppConstants.CoverDecodeWidth, cancellationToken).ConfigureAwait(false);
         }
 
-        internal static Bitmap? RenderFromReader(IDocReader docReader, int pageIndex, int dpi)
+        private static byte[]? TryExtractSingleScanImageBytes(PdfDocument doc, int pageIndex)
         {
-            int pageCount = docReader.GetPageCount();
-            if (pageIndex < 0 || pageIndex >= pageCount)
+            if (pageIndex < 0 || pageIndex >= doc.NumberOfPages) return null;
+
+            Page page = doc.GetPage(pageIndex + 1);
+            if (page.Letters.Count > 0) return null;
+
+            IReadOnlyList<IPdfImage> images = page.GetImages().ToList();
+            if (images.Count != 1) return null;
+
+            IPdfImage img = images[0];
+            ReadOnlySpan<byte> raw = img.RawBytes;
+            if (raw.Length >= 3 && raw[0] == 0xFF && raw[1] == 0xD8)
             {
-                return null;
+                return raw.ToArray();
             }
 
-            using IPageReader pageReader = docReader.GetPageReader(pageIndex);
-            int width = pageReader.GetPageWidth();
-            int height = pageReader.GetPageHeight();
-            if (width <= 0 || height <= 0)
+            if (img.TryGetPng(out byte[]? pngBytes) && pngBytes is { Length: > 0 })
             {
-                return null;
+                return pngBytes;
             }
 
-            byte[] rawBgra = pageReader.GetImage(WhiteBackgroundConverter, RenderFlags.RenderAnnotations);
-            return ImageHelper.CreateFromBgra32(rawBgra, width, height, dpi);
+            return null;
         }
 
         private sealed class PdfReadSession : IComicReadSession
         {
             private readonly string _filePath;
-            private IntPtr _nativeSession;
-            private IDocReader? _docReader;
-            private double _loadedScalingFactor;
+            private readonly INativePdfRenderer? _nativeRenderer;
+            private readonly PdfDocument _pdfDoc;
+            private readonly object _pdfPigLock = new();
+            private readonly SemaphoreSlim _nativeOpenLock = new(1, 1);
+            private INativePdfSession? _nativeSession;
             private bool _disposed;
 
-            public PdfReadSession(string filePath)
+            public PdfReadSession(string filePath, INativePdfRenderer? nativeRenderer)
             {
                 _filePath = filePath;
-                _loadedScalingFactor = AppConstants.DefaultRenderDpi / 72.0;
-
-                if (RustInterop.IsAvailable)
-                {
-                    _nativeSession = RustInterop.open_document(filePath);
-                    if (_nativeSession != IntPtr.Zero)
-                    {
-                        PageCount = RustInterop.get_page_count(_nativeSession);
-                        return;
-                    }
-                }
-
-                lock (DocnetLock)
-                {
-                    _docReader = DocLib.Instance.GetDocReader(_filePath, new PageDimensions(_loadedScalingFactor));
-                    PageCount = _docReader.GetPageCount();
-                }
+                _nativeRenderer = nativeRenderer;
+                _pdfDoc = PdfDocument.Open(filePath);
+                PageCount = _pdfDoc.NumberOfPages;
             }
 
             public int PageCount { get; }
 
-            public Task<Bitmap?> RenderPageAsync(
-                int pageIndex,
-                int dpi = AppConstants.DefaultRenderDpi,
-                CancellationToken cancellationToken = default)
+            public bool SupportsDynamicZoomDpi => true;
+
+            public Task<byte[]?> ExtractRawBytesAsync(int pageIndex, CancellationToken cancellationToken = default)
             {
-                return Task.Run(() =>
+                return Task.Run<byte[]?>(() =>
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-
-                    if (_nativeSession != IntPtr.Zero)
+                    lock (_pdfPigLock)
                     {
                         if (_disposed) return null;
-                        return RustInterop.RenderPageToBitmap(_nativeSession, pageIndex, dpi);
-                    }
-
-                    double requestedScale = Math.Max(0.5, dpi / 72.0);
-                    bool lockTaken = false;
-                    try
-                    {
-                        while (!lockTaken)
-                        {
-                            cancellationToken.ThrowIfCancellationRequested();
-                            Monitor.TryEnter(DocnetLock, 25, ref lockTaken);
-                        }
-
-                        if (_disposed || cancellationToken.IsCancellationRequested) return null;
-
-                        if (_docReader is null || Math.Abs(requestedScale - _loadedScalingFactor) > 0.01)
-                        {
-                            _docReader?.Dispose();
-                            _loadedScalingFactor = requestedScale;
-                            _docReader = DocLib.Instance.GetDocReader(_filePath, new PageDimensions(_loadedScalingFactor));
-                        }
-
-                        return RenderFromReader(_docReader, pageIndex, dpi);
-                    }
-                    finally
-                    {
-                        if (lockTaken)
-                        {
-                            Monitor.Exit(DocnetLock);
-                        }
+                        return TryExtractSingleScanImageBytes(_pdfDoc, pageIndex);
                     }
                 }, cancellationToken);
             }
 
-            public void Dispose()
+            public Task<Bitmap?> DecodeFromRawBytesAsync(byte[] rawBytes, CancellationToken cancellationToken = default)
             {
-                if (_nativeSession != IntPtr.Zero)
+                return Task.Run<Bitmap?>(() =>
                 {
-                    if (_disposed) return;
-                    _disposed = true;
-                    RustInterop.close_document(_nativeSession);
-                    _nativeSession = IntPtr.Zero;
-                    return;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return ImageHelper.DecodeFromBytes(rawBytes, null);
+                }, cancellationToken);
+            }
+
+            public async Task<Bitmap?> RenderPreviewAsync(
+                int pageIndex,
+                int maxWidth = AppConstants.PreviewDecodeWidth,
+                CancellationToken cancellationToken = default)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                byte[]? scanBytes = await ExtractRawBytesAsync(pageIndex, cancellationToken).ConfigureAwait(false);
+                if (scanBytes is not null)
+                {
+                    return await Task.Run(() => ImageHelper.DecodeFromBytes(scanBytes, maxWidth), cancellationToken).ConfigureAwait(false);
                 }
 
-                lock (DocnetLock)
+                INativePdfSession? native = await EnsureNativeSessionAsync(cancellationToken).ConfigureAwait(false);
+                return native is not null
+                    ? await native.RenderPageAsync(pageIndex, AppConstants.PreviewRenderDpi, cancellationToken).ConfigureAwait(false)
+                    : null;
+            }
+
+            public async Task<Bitmap?> RenderPageAsync(
+                int pageIndex,
+                int dpi = AppConstants.DefaultRenderDpi,
+                CancellationToken cancellationToken = default)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                byte[]? scanBytes = await ExtractRawBytesAsync(pageIndex, cancellationToken).ConfigureAwait(false);
+                if (scanBytes is not null)
+                {
+                    // Return 100% original untouched scan resolution for Full Quality tier.
+                    return await Task.Run(() => ImageHelper.DecodeFromBytes(scanBytes, null), cancellationToken).ConfigureAwait(false);
+                }
+
+                INativePdfSession? native = await EnsureNativeSessionAsync(cancellationToken).ConfigureAwait(false);
+                return native is not null
+                    ? await native.RenderPageAsync(pageIndex, dpi, cancellationToken).ConfigureAwait(false)
+                    : null;
+            }
+
+            private async Task<INativePdfSession?> EnsureNativeSessionAsync(CancellationToken cancellationToken)
+            {
+                if (_nativeSession is not null || _nativeRenderer is null || _disposed)
+                    return _nativeSession;
+
+                await _nativeOpenLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    if (_nativeSession is null && !_disposed)
+                    {
+                        _nativeSession = await _nativeRenderer.OpenSessionAsync(_filePath, cancellationToken).ConfigureAwait(false);
+                    }
+                    return _nativeSession;
+                }
+                finally
+                {
+                    _nativeOpenLock.Release();
+                }
+            }
+
+            public void Dispose()
+            {
+                lock (_pdfPigLock)
                 {
                     if (_disposed) return;
                     _disposed = true;
-                    _docReader?.Dispose();
-                    _docReader = null;
+                    _pdfDoc.Dispose();
                 }
+
+                _nativeSession?.Dispose();
+                _nativeSession = null;
+                _nativeOpenLock.Dispose();
             }
         }
     }

@@ -20,6 +20,24 @@ namespace ComicReader.Views
         private readonly ISettingsService? _settingsService;
         private bool _isInitialized;
 
+        public static readonly StyledProperty<bool> IsCompactLayoutProperty =
+            AvaloniaProperty.Register<MainView, bool>(nameof(IsCompactLayout), false);
+
+        public bool IsCompactLayout
+        {
+            get => GetValue(IsCompactLayoutProperty);
+            set => SetValue(IsCompactLayoutProperty, value);
+        }
+
+        public static readonly StyledProperty<Thickness> SafeAreaPaddingProperty =
+            AvaloniaProperty.Register<MainView, Thickness>(nameof(SafeAreaPadding), default);
+
+        public Thickness SafeAreaPadding
+        {
+            get => GetValue(SafeAreaPaddingProperty);
+            set => SetValue(SafeAreaPaddingProperty, value);
+        }
+
         /// <summary>
         /// Strongly-typed ViewModel accessor for CompiledBindings inside DataTemplates and ContextMenus.
         /// </summary>
@@ -29,6 +47,7 @@ namespace ComicReader.Views
         {
             InitializeComponent();
             Loaded += OnLoaded;
+            SizeChanged += OnSizeChanged;
         }
 
         public MainView(MainViewModel viewModel, ISettingsService settingsService)
@@ -39,10 +58,26 @@ namespace ComicReader.Views
             DataContext = _viewModel;
 
             Loaded += OnLoaded;
+            SizeChanged += OnSizeChanged;
+        }
+
+        private void OnSizeChanged(object? sender, SizeChangedEventArgs e)
+        {
+            bool compact = e.NewSize.Width > 0 && e.NewSize.Width < 760;
+            if (IsCompactLayout != compact)
+            {
+                IsCompactLayout = compact;
+            }
         }
 
         private async void OnLoaded(object? sender, RoutedEventArgs e)
         {
+            if (TopLevel.GetTopLevel(this)?.InsetsManager is { } insets)
+            {
+                SafeAreaPadding = insets.SafeAreaPadding;
+                insets.SafeAreaChanged += (_, args) => SafeAreaPadding = args.SafeAreaPadding;
+            }
+
             if (_isInitialized || ViewModel is null) return;
             _isInitialized = true;
             await ViewModel.InitializeAsync();

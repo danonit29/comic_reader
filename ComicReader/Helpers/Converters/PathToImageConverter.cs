@@ -13,7 +13,7 @@ namespace ComicReader.Helpers.Converters
     /// </summary>
     public sealed class PathToImageConverter : IValueConverter
     {
-        private static readonly ConcurrentDictionary<string, Bitmap> CoverCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, WeakReference<Bitmap>> CoverCache = new(StringComparer.OrdinalIgnoreCase);
 
         /// <inheritdoc />
         public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
@@ -23,11 +23,16 @@ namespace ComicReader.Helpers.Converters
                 return null;
             }
 
-            return CoverCache.GetOrAdd(path, static filePath =>
+            if (CoverCache.TryGetValue(path, out WeakReference<Bitmap>? weakRef) &&
+                weakRef.TryGetTarget(out Bitmap? cached))
             {
-                using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                return ImageHelper.DecodeFromStream(stream, AppConstants.CoverDecodeWidth);
-            });
+                return cached;
+            }
+
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            Bitmap decoded = ImageHelper.DecodeFromStream(stream, AppConstants.CoverDecodeWidth);
+            CoverCache[path] = new WeakReference<Bitmap>(decoded);
+            return decoded;
         }
 
         /// <inheritdoc />

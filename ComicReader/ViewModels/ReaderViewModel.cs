@@ -21,20 +21,30 @@ namespace ComicReader.ViewModels
     /// </summary>
     public partial class ReaderViewModel : ObservableObject
     {
-        private const int PreloadBehindCount = 5;
-        private const int PreloadAheadCount  = 5;
+        private const int FullLoadPageThreshold = 200;
+        private const int LargeBookInitialPreloadCount = 100;
+        // Keep only 3 behind + current + 4 ahead = max 8 decoded Full-Quality RGBA Bitmaps (~150 MB instead of 400-900 MB).
+        private const int PreloadBehindCount = 3;
+        private const int PreloadAheadCount  = 4;
+        // Wider ±8 window keeps raw compressed JPEG/PNG bytes (~0.3-1 MB/page) in RAM for 10-25ms instant Full-Quality decode.
+        private const int CompressedWindowRadius = 8;
 
         private readonly IComicReaderFactory _readerFactory;
         private readonly IStorageService _storageService;
         private readonly IBookmarkService _bookmarkService;
-        private readonly ImageCacheManager _imageCache = new(keepBehind: 5, keepAhead: 5);
-        private readonly SemaphoreSlim _preloadConcurrency = new(3, 3);
+        private readonly ImageCacheManager _imageCache = new(keepBehind: PreloadBehindCount, keepAhead: PreloadAheadCount);
+        private readonly SemaphoreSlim _preloadConcurrency = new(2, 2);
         private readonly ConcurrentDictionary<int, byte> _inFlightPages = new();
+        private readonly ConcurrentDictionary<int, byte> _inFlightPreviews = new();
+        private readonly ConcurrentDictionary<int, byte> _inFlightCompressed = new();
         private readonly object _windowStateLock = new();
         private long _windowGeneration;
         private int _activeCenterIndex = -1;
         private int _scrollDirection = 1; // +1 = forward/down, -1 = backward/up
+        private int _lastPdfRenderDpi = AppConstants.DefaultRenderDpi;
         private CancellationTokenSource? _loadPageCts;
+        private CancellationTokenSource? _zoomRerenderCts;
+        private CancellationTokenSource? _bulkPreloadCts;
         private CancellationTokenSource? _saveDebounceCts;
         private CancellationTokenSource? _toastCts;
         private ComicBook? _currentComic;
@@ -62,6 +72,9 @@ namespace ComicReader.ViewModels
 
         [ObservableProperty]
         private bool _isLoadingPage;
+
+        [ObservableProperty]
+        private string _loadingStatusText = "Đang load...";
 
         [ObservableProperty]
         private bool _isBookmarkToastVisible;
@@ -133,6 +146,7 @@ namespace ComicReader.ViewModels
         /// </summary>
         public async Task LoadComicAsync(ComicBook comic)
         {
+            CancelBulkPreload();
             CancelWindowLoading();
             DisposeReadSession();
             _isClosed = false;
@@ -182,7 +196,24 @@ namespace ComicReader.ViewModels
             OnPropertyChanged(nameof(IsCurrentPageBookmarked));
             InitializePagePlaceholders();
 
-            _ = EnsurePageWindowLoadedAsync(CurrentPage - 1);
+            // Tier 2 (Full Quality) keeps 100% original resolution for current/bookmark + 8 behind + 8 ahead (16 surrounding pages).
+            _imageCache.ConfigureWindow(PreloadBehindCount, PreloadAheadCount);
+
+            Task initialWindowTask = EnsurePageWindowLoadedAsync(CurrentPage - 1, reanchorAfterLoad: true);
+
+            if (TotalPages > 1)
+            {
+                // Tier 1 (Preview): wait for bookmark + 8 behind + 8 ahead Full Quality window to finish first,
+                // then fill lightweight previews for remaining pages without competing for decode slots.
+                if (TotalPages <= FullLoadPageThreshold)
+                {
+                    StartBulkPreviewPreload(TotalPages, CurrentPage - 1, initialWindowTask);
+                }
+                else if (CurrentPage <= LargeBookInitialPreloadCount)
+                {
+                    StartBulkPreviewPreload(LargeBookInitialPreloadCount, CurrentPage - 1, initialWindowTask);
+                }
+            }
         }
 
         /// <summary>
@@ -241,6 +272,12 @@ namespace ComicReader.ViewModels
             _currentPageLocalRatio = bookmark.PageLocalOffsetRatio;
             _hasRestoredInitialScroll = true;
 
+            if (Pages[bookmark.PageNumber - 1].Image is null && !_imageCache.ContainsFull(bookmark.PageNumber - 1))
+            {
+                LoadingStatusText = $"Đang load trang {bookmark.PageNumber}...";
+                IsLoadingPage = true;
+            }
+
             if (bookmark.PageLocalOffsetRatio > 0.001)
             {
                 RestoreExactPagePositionRequested?.Invoke(bookmark.PageNumber, bookmark.PageLocalOffsetRatio);
@@ -250,7 +287,7 @@ namespace ComicReader.ViewModels
                 ScrollToPageRequested?.Invoke(bookmark.PageNumber);
             }
 
-            _ = EnsurePageWindowLoadedAsync(bookmark.PageNumber - 1, cancelPrevious: true);
+            _ = EnsurePageWindowLoadedAsync(bookmark.PageNumber - 1, cancelPrevious: true, reanchorAfterLoad: true);
             await SaveProgressAsync();
         }
 
@@ -267,6 +304,55 @@ namespace ComicReader.ViewModels
             CurrentPage = pageNumber;
             _hasRestoredInitialScroll = true;
             ScrollToPageRequested?.Invoke(pageNumber);
+        }
+
+        /// <summary>
+        /// Loads only the single target page (no neighbor preloading) when the user pauses mid-drag.
+        /// </summary>
+        public void PreviewLoadSinglePage(int pageNumber)
+        {
+            if (_readSession is null || pageNumber < 1 || pageNumber > TotalPages) return;
+            int idx = pageNumber - 1;
+            if (_imageCache.ContainsFull(idx)) return;
+
+            if (Pages[idx].Image is null)
+            {
+                LoadingStatusText = $"Đang load trang {pageNumber}...";
+                IsLoadingPage = true;
+            }
+
+            CancelWindowLoading();
+            CancellationToken token;
+            lock (_windowStateLock)
+            {
+                _activeCenterIndex = idx;
+                Interlocked.Increment(ref _windowGeneration);
+                _loadPageCts = new CancellationTokenSource();
+                token = _loadPageCts.Token;
+            }
+
+            _ = LoadSingleWithDeadlineAsync(idx, token);
+        }
+
+        private async Task LoadSingleWithDeadlineAsync(int pageIndex, CancellationToken token)
+        {
+            using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            deadlineCts.CancelAfter(2000);
+            try
+            {
+                await LoadPageAsync(pageIndex, deadlineCts.Token, usePreloadThrottle: false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Cancelled by newer request or 2s deadline.
+            }
+            finally
+            {
+                if (!token.IsCancellationRequested && _activeCenterIndex == pageIndex)
+                {
+                    Dispatcher.UIThread.Post(() => IsLoadingPage = false);
+                }
+            }
         }
 
         /// <summary>
@@ -299,6 +385,12 @@ namespace ComicReader.ViewModels
             CurrentPage = pageNumber;
             _currentPageLocalRatio = targetLocalRatio;
             _hasRestoredInitialScroll = true;
+
+            if (Pages[pageNumber - 1].Image is null && !_imageCache.Contains(pageNumber - 1))
+            {
+                LoadingStatusText = $"Đang load trang {pageNumber}...";
+                IsLoadingPage = true;
+            }
 
             if (targetLocalRatio > 0.001)
             {
@@ -390,7 +482,55 @@ namespace ComicReader.ViewModels
 
             ZoomChanging?.Invoke(oldZoom, newZoom);
             ZoomLevel = newZoom;
+            ScheduleDynamicZoomRerenderIfNeeded();
             await SaveProgressAsync();
+        }
+
+        private void ScheduleDynamicZoomRerenderIfNeeded()
+        {
+            if (_readSession is not { SupportsDynamicZoomDpi: true } || Pages.Count == 0) return;
+
+            int targetDpi = Math.Clamp((int)Math.Round(150.0 * Math.Max(1.0, ZoomLevel)), AppConstants.DefaultRenderDpi, 450);
+            if (Math.Abs(targetDpi - _lastPdfRenderDpi) < 40) return;
+
+            _zoomRerenderCts?.Cancel();
+            _zoomRerenderCts?.Dispose();
+            _zoomRerenderCts = new CancellationTokenSource();
+            CancellationToken token = _zoomRerenderCts.Token;
+            int pageIndex = Math.Clamp(CurrentPage - 1, 0, Pages.Count - 1);
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(180, token).ConfigureAwait(false);
+                    if (token.IsCancellationRequested || _isClosed || _readSession is null) return;
+
+                    Bitmap? sharp = await _readSession.RenderPageAsync(pageIndex, targetDpi, token).ConfigureAwait(false);
+                    if (sharp is null || token.IsCancellationRequested || _isClosed)
+                    {
+                        sharp?.Dispose();
+                        return;
+                    }
+
+                    _lastPdfRenderDpi = targetDpi;
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        if (token.IsCancellationRequested || _isClosed || pageIndex >= Pages.Count)
+                        {
+                            sharp.Dispose();
+                            return;
+                        }
+
+                        _imageCache.SetFull(pageIndex, sharp);
+                        Pages[pageIndex].Image = sharp;
+                    });
+                }
+                catch (OperationCanceledException)
+                {
+                    // Superseded by newer zoom step.
+                }
+            }, token);
         }
 
         /// <summary>
@@ -468,6 +608,7 @@ namespace ComicReader.ViewModels
         public void Cleanup()
         {
             _isClosed = true;
+            CancelBulkPreload();
             CancelWindowLoading();
             CancelDebouncedSave();
 
@@ -497,7 +638,12 @@ namespace ComicReader.ViewModels
             _readSession = null;
             if (sessionToDispose is not null)
             {
-                _ = Task.Run(sessionToDispose.Dispose);
+                _ = Task.Run(() =>
+                {
+                    sessionToDispose.Dispose();
+                    System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+                    GC.Collect(2, GCCollectionMode.Optimized, blocking: false);
+                });
             }
         }
 
@@ -521,6 +667,13 @@ namespace ComicReader.ViewModels
             if (_readSession is null || Pages.Count == 0) return;
 
             int clampedCenter = Math.Clamp(centerIndex, 0, Pages.Count - 1);
+            bool isLargeBookPast100 = Pages.Count > FullLoadPageThreshold && clampedCenter >= LargeBookInitialPreloadCount;
+
+            if (isLargeBookPast100)
+            {
+                // Once past page 100 on >200-page books, cancel initial 1..100 preview fill and trim distant previews.
+                CancelBulkPreload();
+            }
 
             long generation;
             CancellationToken token;
@@ -547,29 +700,59 @@ namespace ComicReader.ViewModels
                 token = _loadPageCts.Token;
             }
 
+            // Always enforce Tier 2 decoded RGBA window (max 8 Full-Quality Bitmaps: 3 behind + current + 4 ahead).
+            // Evicted full-res pages downgrade seamlessly to their lightweight Preview Bitmap instead of blanking.
             EvictDistantPages(clampedCenter);
-
-            bool centerNeedsLoad = Pages[clampedCenter].Image is null;
-            if (centerNeedsLoad && _imageCache.TryGet(clampedCenter, out Bitmap? cached) && cached is not null)
+            if (isLargeBookPast100)
             {
+                _imageCache.EvictPreviewsOutsideWindow(clampedCenter, 20, 30, (index, fullFallback) =>
+                {
+                    if (index >= 0 && index < Pages.Count && fullFallback is null)
+                    {
+                        Pages[index].Image = null;
+                    }
+                });
+                _imageCache.EvictCompressedOutsideWindow(clampedCenter, CompressedWindowRadius, CompressedWindowRadius);
+            }
+
+            bool centerNeedsFull = !_imageCache.ContainsFull(clampedCenter);
+            if (!centerNeedsFull && _imageCache.TryGetFull(clampedCenter, out Bitmap? cachedFull) && cachedFull is not null)
+            {
+                if (!ReferenceEquals(Pages[clampedCenter].Image, cachedFull))
+                {
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        if (generation == Interlocked.Read(ref _windowGeneration) && clampedCenter < Pages.Count)
+                        {
+                            Pages[clampedCenter].Image = cachedFull;
+                        }
+                    });
+                }
+            }
+            else if (Pages[clampedCenter].Image is null &&
+                     _imageCache.TryGetPreview(clampedCenter, out Bitmap? cachedPreview) &&
+                     cachedPreview is not null)
+            {
+                // Show lightweight preview immediately (0ms, no blank screen) while upgrading to full quality.
                 Dispatcher.UIThread.Post(() =>
                 {
                     if (generation == Interlocked.Read(ref _windowGeneration) &&
                         clampedCenter < Pages.Count &&
                         Pages[clampedCenter].Image is null)
                     {
-                        Pages[clampedCenter].Image = cached;
+                        Pages[clampedCenter].Image = cachedPreview;
                     }
                 });
-                centerNeedsLoad = false;
             }
 
-            if (centerNeedsLoad)
+            bool showSpinner = centerNeedsFull && Pages[clampedCenter].Image is null && !_imageCache.ContainsPreview(clampedCenter);
+            if (showSpinner)
             {
                 Dispatcher.UIThread.Post(() =>
                 {
                     if (generation == Interlocked.Read(ref _windowGeneration))
                     {
+                        LoadingStatusText = $"Đang load trang {clampedCenter + 1}...";
                         IsLoadingPage = true;
                     }
                 });
@@ -577,8 +760,8 @@ namespace ComicReader.ViewModels
 
             try
             {
-                // Priority fast-lane: decode the target page immediately without waiting on background preload slots.
-                if (centerNeedsLoad)
+                // Priority fast-lane: always decode the target/bookmark page at 100% Full Original Quality without cutting it off.
+                if (centerNeedsFull)
                 {
                     await LoadPageAsync(clampedCenter, token, usePreloadThrottle: false);
                 }
@@ -596,29 +779,33 @@ namespace ComicReader.ViewModels
                     Dispatcher.UIThread.Post(() =>
                         RestoreExactPagePositionRequested?.Invoke(clampedCenter + 1, _currentPageLocalRatio));
                 }
-                else if (reanchorAfterLoad && centerNeedsLoad)
+                else if (reanchorAfterLoad)
                 {
-                    // Re-anchor viewport onto the target page after its true Image height is measured,
-                    // preventing VirtualizingStackPanel AverageItemHeight drift from landing on an evicted page.
+                    // Re-anchor viewport onto the target page (and exact bookmark local ratio if any) after image load/layout
+                    // so VirtualizingStackPanel never drifts onto an unloaded neighbor page.
                     Dispatcher.UIThread.Post(() =>
                     {
                         if (generation == Interlocked.Read(ref _windowGeneration))
                         {
-                            ScrollToPageRequested?.Invoke(clampedCenter + 1);
+                            if (_currentPageLocalRatio > 0.001)
+                                RestoreExactPagePositionRequested?.Invoke(clampedCenter + 1, _currentPageLocalRatio);
+                            else
+                                ScrollToPageRequested?.Invoke(clampedCenter + 1);
                         }
                     }, DispatcherPriority.Loaded);
                 }
 
-                // Preload nearby pages in background, prioritizing the user's scroll direction.
+                // Preload nearby full-res pages: for page 101+ on >200-page books, prioritize 10 pages ahead first.
+                int direction = isLargeBookPast100 ? 1 : _scrollDirection;
                 var preloadTasks = new List<Task>();
-                foreach (int index in BuildWindowOrder(clampedCenter, Pages.Count, _scrollDirection))
+                foreach (int index in BuildWindowOrder(clampedCenter, Pages.Count, direction))
                 {
                     if (token.IsCancellationRequested || generation != Interlocked.Read(ref _windowGeneration))
                     {
                         break;
                     }
 
-                    if (Pages[index].Image is null && !_inFlightPages.ContainsKey(index))
+                    if (!_imageCache.ContainsFull(index) && !_inFlightPages.ContainsKey(index))
                     {
                         preloadTasks.Add(LoadPageAsync(index, token, usePreloadThrottle: true));
                     }
@@ -627,6 +814,22 @@ namespace ComicReader.ViewModels
                 if (preloadTasks.Count > 0)
                 {
                     await Task.WhenAll(preloadTasks);
+                }
+
+                // Cache raw compressed bytes for the outer ±8 surrounding pages (offsets 4..8 behind / 5..8 ahead)
+                // so scrolling further decodes straight from RAM in ~10-25ms at 100% original quality.
+                for (int offset = 1; offset <= CompressedWindowRadius; offset++)
+                {
+                    if (token.IsCancellationRequested || generation != Interlocked.Read(ref _windowGeneration))
+                        break;
+
+                    int aheadIdx = clampedCenter + offset;
+                    if (aheadIdx < Pages.Count && !_imageCache.ContainsFull(aheadIdx) && !_imageCache.ContainsCompressed(aheadIdx))
+                        _ = PreloadCompressedBytesAsync(aheadIdx, token);
+
+                    int behindIdx = clampedCenter - offset;
+                    if (behindIdx >= 0 && !_imageCache.ContainsFull(behindIdx) && !_imageCache.ContainsCompressed(behindIdx))
+                        _ = PreloadCompressedBytesAsync(behindIdx, token);
                 }
             }
             catch (OperationCanceledException)
@@ -647,7 +850,7 @@ namespace ComicReader.ViewModels
             if (token.IsCancellationRequested) return;
 
             IComicReadSession? session = _readSession;
-            if (session is null || pageIndex < 0 || pageIndex >= Pages.Count || Pages[pageIndex].Image is not null) return;
+            if (session is null || pageIndex < 0 || pageIndex >= Pages.Count || _imageCache.ContainsFull(pageIndex)) return;
             if (!_inFlightPages.TryAdd(pageIndex, 0)) return;
 
             bool acquired = false;
@@ -659,11 +862,23 @@ namespace ComicReader.ViewModels
                     acquired = true;
                 }
 
-                if (token.IsCancellationRequested || pageIndex >= Pages.Count || Pages[pageIndex].Image is not null) return;
+                if (token.IsCancellationRequested || pageIndex >= Pages.Count || _imageCache.ContainsFull(pageIndex)) return;
 
-                Bitmap? rendered = await Task.Run(
-                    () => session.RenderPageAsync(pageIndex, AppConstants.DefaultRenderDpi, token),
-                    token);
+                Bitmap? rendered = null;
+                if (_imageCache.TryGetCompressed(pageIndex, out byte[]? cachedRawBytes) && cachedRawBytes is not null)
+                {
+                    rendered = await session.DecodeFromRawBytesAsync(cachedRawBytes, token);
+                }
+
+                if (rendered is null)
+                {
+                    int renderDpi = session.SupportsDynamicZoomDpi
+                        ? Math.Clamp((int)Math.Round(150.0 * Math.Max(1.0, ZoomLevel)), AppConstants.DefaultRenderDpi, 450)
+                        : AppConstants.DefaultRenderDpi;
+                    rendered = await Task.Run(
+                        () => session.RenderPageAsync(pageIndex, renderDpi, token),
+                        token);
+                }
 
                 if (rendered is null) return;
 
@@ -675,27 +890,16 @@ namespace ComicReader.ViewModels
 
                 Dispatcher.UIThread.Post(() =>
                 {
-                    if (token.IsCancellationRequested)
+                    if (token.IsCancellationRequested || pageIndex < 0 || pageIndex >= Pages.Count)
                     {
                         rendered.Dispose();
                         return;
                     }
 
-                    if (pageIndex < 0 || pageIndex >= Pages.Count)
-                    {
-                        rendered.Dispose();
-                        return;
-                    }
-
-                    Bitmap? oldBitmap = Pages[pageIndex].Image;
-                    if (ReferenceEquals(oldBitmap, rendered))
-                    {
-                        return;
-                    }
-
-                    _imageCache.Set(pageIndex, rendered);
+                    // SetFull stores the full-res Bitmap and disposes any previous full-res Bitmap for this index,
+                    // while keeping the lightweight preview Bitmap intact in _previewCache for fast downgrade fallback.
+                    _imageCache.SetFull(pageIndex, rendered);
                     Pages[pageIndex].Image = rendered;
-                    oldBitmap?.Dispose();
                 });
             }
             catch (OperationCanceledException)
@@ -715,39 +919,194 @@ namespace ComicReader.ViewModels
 
         private void EvictDistantPages(int centerIndex)
         {
-            _imageCache.EvictOutsideWindow(centerIndex, index =>
+            _imageCache.EvictOutsideWindow(centerIndex, (index, previewFallback) =>
             {
                 if (index >= 0 && index < Pages.Count)
                 {
-                    Pages[index].Image = null;
+                    Pages[index].Image = previewFallback;
                 }
             });
         }
 
         private static IEnumerable<int> BuildWindowOrder(int centerIndex, int totalCount, int scrollDirection = 1)
         {
-            int maxOffset = Math.Max(PreloadAheadCount, PreloadBehindCount);
-            for (int offset = 1; offset <= maxOffset; offset++)
+            if (scrollDirection >= 0)
             {
-                if (scrollDirection >= 0)
+                for (int offset = 1; offset <= PreloadAheadCount; offset++)
                 {
-                    if (offset <= PreloadAheadCount && centerIndex + offset < totalCount)
+                    if (centerIndex + offset < totalCount)
                         yield return centerIndex + offset;
-                    if (offset <= PreloadBehindCount && centerIndex - offset >= 0)
+                }
+                for (int offset = 1; offset <= PreloadBehindCount; offset++)
+                {
+                    if (centerIndex - offset >= 0)
                         yield return centerIndex - offset;
                 }
-                else
+            }
+            else
+            {
+                for (int offset = 1; offset <= PreloadBehindCount; offset++)
                 {
-                    if (offset <= PreloadBehindCount && centerIndex - offset >= 0)
+                    if (centerIndex - offset >= 0)
                         yield return centerIndex - offset;
-                    if (offset <= PreloadAheadCount && centerIndex + offset < totalCount)
+                }
+                for (int offset = 1; offset <= PreloadAheadCount; offset++)
+                {
+                    if (centerIndex + offset < totalCount)
                         yield return centerIndex + offset;
                 }
             }
         }
 
+        private void StartBulkPreviewPreload(int pageCountToPreload, int priorityCenterIndex, Task? waitForWindowTask = null)
+        {
+            CancelBulkPreload();
+            if (_readSession is null || Pages.Count == 0 || pageCountToPreload <= 0) return;
+
+            var cts = new CancellationTokenSource();
+            _bulkPreloadCts = cts;
+            CancellationToken token = cts.Token;
+            int limit = Math.Min(pageCountToPreload, Pages.Count);
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    // Wait until the initial bookmark/entry page + 8 behind + 8 ahead finish at 100% Full Quality.
+                    if (waitForWindowTask is not null)
+                    {
+                        await waitForWindowTask.WaitAsync(token).ConfigureAwait(false);
+                    }
+
+                    for (int i = 0; i < limit; i++)
+                    {
+                        if (token.IsCancellationRequested || _isClosed) break;
+                        if (Math.Abs(i - priorityCenterIndex) <= PreloadBehindCount || _imageCache.ContainsFull(i) || _imageCache.ContainsPreview(i))
+                            continue;
+
+                        await LoadPreviewPageAsync(i, token).ConfigureAwait(false);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // Cancelled when user closes or moves past page 100 on >200-page books.
+                }
+            }, token);
+        }
+
+        private async Task PreloadCompressedBytesAsync(int pageIndex, CancellationToken token)
+        {
+            if (token.IsCancellationRequested || _isClosed) return;
+            IComicReadSession? session = _readSession;
+            if (session is null || pageIndex < 0 || pageIndex >= Pages.Count) return;
+            if (_imageCache.ContainsCompressed(pageIndex) || !_inFlightCompressed.TryAdd(pageIndex, 0)) return;
+
+            try
+            {
+                byte[]? raw = await session.ExtractRawBytesAsync(pageIndex, token).ConfigureAwait(false);
+                if (raw is not null && !token.IsCancellationRequested && !_isClosed)
+                {
+                    _imageCache.SetCompressed(pageIndex, raw);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected on cancel.
+            }
+            finally
+            {
+                _inFlightCompressed.TryRemove(pageIndex, out _);
+            }
+        }
+
+        private async Task LoadPreviewPageAsync(int pageIndex, CancellationToken token)
+        {
+            if (token.IsCancellationRequested) return;
+            IComicReadSession? session = _readSession;
+            if (session is null || pageIndex < 0 || pageIndex >= Pages.Count) return;
+            if (_imageCache.ContainsPreview(pageIndex) || !_inFlightPreviews.TryAdd(pageIndex, 0)) return;
+
+            bool acquired = false;
+            try
+            {
+                await _preloadConcurrency.WaitAsync(token).ConfigureAwait(false);
+                acquired = true;
+
+                if (token.IsCancellationRequested || _isClosed || _imageCache.ContainsPreview(pageIndex)) return;
+
+                // If ZIP/CBZ supports raw compressed bytes, extract once into Compressed Cache (~0.3-1 MB)
+                // and decode the lightweight 240px preview from those bytes so future Full Quality decodes hit RAM directly!
+                Bitmap? preview = null;
+                if (!_imageCache.TryGetCompressed(pageIndex, out byte[]? rawBytes))
+                {
+                    rawBytes = await session.ExtractRawBytesAsync(pageIndex, token).ConfigureAwait(false);
+                    if (rawBytes is not null && !token.IsCancellationRequested && !_isClosed)
+                    {
+                        _imageCache.SetCompressed(pageIndex, rawBytes);
+                    }
+                }
+
+                if (rawBytes is not null)
+                {
+                    preview = await Task.Run(
+                        () => ImageHelper.DecodeFromBytes(rawBytes, AppConstants.PreviewDecodeWidth),
+                        token).ConfigureAwait(false);
+                }
+                else
+                {
+                    preview = await session.RenderPreviewAsync(pageIndex, AppConstants.PreviewDecodeWidth, token).ConfigureAwait(false);
+                }
+                if (preview is null) return;
+
+                if (token.IsCancellationRequested || _isClosed)
+                {
+                    preview.Dispose();
+                    return;
+                }
+
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (token.IsCancellationRequested || _isClosed || pageIndex < 0 || pageIndex >= Pages.Count)
+                    {
+                        preview.Dispose();
+                        return;
+                    }
+
+                    _imageCache.SetPreview(pageIndex, preview);
+                    if (!_imageCache.ContainsFull(pageIndex) && Pages[pageIndex].Image is null)
+                    {
+                        Pages[pageIndex].Image = preview;
+                    }
+                });
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected on cancel.
+            }
+            finally
+            {
+                if (acquired)
+                    _preloadConcurrency.Release();
+
+                _inFlightPreviews.TryRemove(pageIndex, out _);
+            }
+        }
+
+        private void CancelBulkPreload()
+        {
+            _bulkPreloadCts?.Cancel();
+            _bulkPreloadCts?.Dispose();
+            _bulkPreloadCts = null;
+            _inFlightPreviews.Clear();
+            _inFlightCompressed.Clear();
+        }
+
         private void CancelWindowLoading()
         {
+            _zoomRerenderCts?.Cancel();
+            _zoomRerenderCts?.Dispose();
+            _zoomRerenderCts = null;
+
             lock (_windowStateLock)
             {
                 _loadPageCts?.Cancel();

@@ -170,125 +170,191 @@
     </UserControl.Resources>
 
     <Grid>
-        <!-- Main Workspace -->
-        <Grid ColumnDefinitions="220,*">
-            <!-- Left Sidebar Navigation -->
-            <Border
-                Grid.Column="0"
-                Padding="12,16"
-                Background="{StaticResource SidebarBackgroundBrush}"
-                BorderBrush="{StaticResource SubtleBorderBrush}"
-                BorderThickness="0,0,1,0">
-                <StackPanel>
-                    <TextBlock
-                        Margin="10,0,0,16"
-                        FontSize="11"
-                        FontWeight="SemiBold"
-                        Foreground="{StaticResource MutedTextBrush}"
-                        Text="NAVIGATION" />
-
-                    <Button
-                        Classes="nav-btn"
-                        Classes.active="{CompiledBinding IsLibraryNavActive}"
-                        Command="{CompiledBinding NavigateCommand}"
-                        CommandParameter="{x:Static helpers:AppConstants.SectionLibrary}">
-                        <StackPanel Orientation="Horizontal" Spacing="10">
-                            <PathIcon Width="16" Height="16" Data="{StaticResource IconLibrary}" />
-                            <TextBlock VerticalAlignment="Center" Text="Library" />
-                        </StackPanel>
-                    </Button>
-
-                    <Button
-                        Classes="nav-btn"
-                        Classes.active="{CompiledBinding IsFoldersSection}"
-                        Command="{CompiledBinding NavigateCommand}"
-                        CommandParameter="{x:Static helpers:AppConstants.SectionFolders}">
-                        <StackPanel Orientation="Horizontal" Spacing="10">
-                            <PathIcon Width="16" Height="16" Data="{StaticResource IconFolder}" />
-                            <TextBlock VerticalAlignment="Center" Text="Folders" />
-                        </StackPanel>
-                    </Button>
-
-                    <Button
-                        Classes="nav-btn"
-                        Classes.active="{CompiledBinding IsSearchNavActive}"
-                        Command="{CompiledBinding NavigateCommand}"
-                        CommandParameter="{x:Static helpers:AppConstants.SectionSearch}">
-                        <StackPanel Orientation="Horizontal" Spacing="10">
-                            <PathIcon Width="16" Height="16" Data="{StaticResource IconSearch}" />
-                            <TextBlock VerticalAlignment="Center" Text="Search" />
-                        </StackPanel>
-                    </Button>
-
-                    <Button
-                        Classes="nav-btn"
-                        Classes.active="{CompiledBinding IsSettingsNavActive}"
-                        Command="{CompiledBinding NavigateCommand}"
-                        CommandParameter="{x:Static helpers:AppConstants.SectionSettings}">
-                        <StackPanel Orientation="Horizontal" Spacing="10">
-                            <PathIcon Width="16" Height="16" Data="{StaticResource IconSettings}" />
-                            <TextBlock VerticalAlignment="Center" Text="Settings" />
-                        </StackPanel>
-                    </Button>
-                </StackPanel>
-            </Border>
-
-            <!-- Right Workspace -->
-            <Grid Grid.Column="1" Margin="24,16,24,24" RowDefinitions="Auto,*">
-                <!-- Top Bar -->
-                <Grid Grid.Row="0" Margin="0,0,0,20" ColumnDefinitions="*,260,Auto">
-                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+        <!-- Main Workspace (Desktop: Left Sidebar + Content; Mobile: Content + Bottom Nav Bar) -->
+        <Grid
+            Margin="{CompiledBinding SafeAreaPadding, RelativeSource={RelativeSource AncestorType=views:MainView}}"
+            RowDefinitions="*,Auto">
+            <Grid Grid.Row="0" ColumnDefinitions="Auto,*">
+                <!-- Left Sidebar Navigation (Desktop / Wide Screens) -->
+                <Border
+                    Grid.Column="0"
+                    Width="220"
+                    Padding="12,16"
+                    Background="{StaticResource SidebarBackgroundBrush}"
+                    BorderBrush="{StaticResource SubtleBorderBrush}"
+                    BorderThickness="0,0,1,0"
+                    IsVisible="{CompiledBinding !IsCompactLayout, RelativeSource={RelativeSource AncestorType=views:MainView}}">
+                    <StackPanel>
                         <TextBlock
-                            FontSize="22"
-                            FontWeight="Bold"
-                            Foreground="White"
-                            Text="{CompiledBinding ActiveSection}" />
-                        <TextBlock
-                            Margin="0,2,0,0"
-                            FontSize="12"
+                            Margin="10,0,0,16"
+                            FontSize="11"
+                            FontWeight="SemiBold"
                             Foreground="{StaticResource MutedTextBrush}"
-                            Text="{CompiledBinding StatusMessage}" />
-                    </StackPanel>
+                            Text="NAVIGATION" />
 
-                    <TextBox
-                        Grid.Column="1"
-                        Margin="0,0,12,0"
-                        VerticalAlignment="Center"
-                        Classes="search-box"
-                        Text="{CompiledBinding SearchQuery}"
-                        Watermark="Search comics...">
-                        <TextBox.InnerLeftContent>
-                            <PathIcon
-                                Width="14"
-                                Height="14"
-                                Margin="10,0,0,0"
-                                Data="{StaticResource IconSearch}"
-                                Foreground="{StaticResource MutedTextBrush}" />
-                        </TextBox.InnerLeftContent>
-                    </TextBox>
-
-                    <!-- Top-right Import Actions -->
-                    <StackPanel Grid.Column="2" VerticalAlignment="Center" Orientation="Horizontal" Spacing="10">
                         <Button
-                            Classes="accent-red"
-                            Command="{CompiledBinding ImportComicCommand}"
-                            IsVisible="{CompiledBinding IsLibrarySection}">
-                            <StackPanel Orientation="Horizontal" Spacing="7">
-                                <PathIcon Width="15" Height="15" Data="{StaticResource IconDocumentAdd}" Foreground="White" />
-                                <TextBlock VerticalAlignment="Center" Text="Import Comic" />
+                            Classes="nav-btn"
+                            Classes.active="{CompiledBinding IsLibraryNavActive}"
+                            Command="{CompiledBinding NavigateCommand}"
+                            CommandParameter="{x:Static helpers:AppConstants.SectionLibrary}">
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <PathIcon Width="16" Height="16" Data="{StaticResource IconLibrary}" />
+                                <TextBlock VerticalAlignment="Center" Text="Library" />
                             </StackPanel>
                         </Button>
 
                         <Button
-                            Classes="accent-red"
-                            Command="{CompiledBinding FolderVm.ImportFolderCommand}">
-                            <StackPanel Orientation="Horizontal" Spacing="7">
-                                <PathIcon Width="15" Height="15" Data="{StaticResource IconFolderAdd}" Foreground="White" />
-                                <TextBlock VerticalAlignment="Center" Text="Import Folder" />
+                            Classes="nav-btn"
+                            Classes.active="{CompiledBinding IsFoldersSection}"
+                            Command="{CompiledBinding NavigateCommand}"
+                            CommandParameter="{x:Static helpers:AppConstants.SectionFolders}">
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <PathIcon Width="16" Height="16" Data="{StaticResource IconFolder}" />
+                                <TextBlock VerticalAlignment="Center" Text="Folders" />
+                            </StackPanel>
+                        </Button>
+
+                        <Button
+                            Classes="nav-btn"
+                            Classes.active="{CompiledBinding IsSearchNavActive}"
+                            Command="{CompiledBinding NavigateCommand}"
+                            CommandParameter="{x:Static helpers:AppConstants.SectionSearch}">
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <PathIcon Width="16" Height="16" Data="{StaticResource IconSearch}" />
+                                <TextBlock VerticalAlignment="Center" Text="Search" />
+                            </StackPanel>
+                        </Button>
+
+                        <Button
+                            Classes="nav-btn"
+                            Classes.active="{CompiledBinding IsSettingsNavActive}"
+                            Command="{CompiledBinding NavigateCommand}"
+                            CommandParameter="{x:Static helpers:AppConstants.SectionSettings}">
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <PathIcon Width="16" Height="16" Data="{StaticResource IconSettings}" />
+                                <TextBlock VerticalAlignment="Center" Text="Settings" />
                             </StackPanel>
                         </Button>
                     </StackPanel>
-                </Grid>
+                </Border>
+
+                <!-- Right Workspace -->
+                <Grid Grid.Column="1" Margin="16,14,16,12" RowDefinitions="Auto,*">
+                    <!-- Desktop Header (1 row) -->
+                    <Grid
+                        Grid.Row="0"
+                        Margin="0,0,0,16"
+                        ColumnDefinitions="*,240,Auto"
+                        IsVisible="{CompiledBinding !IsCompactLayout, RelativeSource={RelativeSource AncestorType=views:MainView}}">
+                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                            <TextBlock
+                                FontSize="22"
+                                FontWeight="Bold"
+                                Foreground="White"
+                                Text="{CompiledBinding ActiveSection}" />
+                            <TextBlock
+                                Margin="0,2,0,0"
+                                FontSize="12"
+                                Foreground="{StaticResource MutedTextBrush}"
+                                Text="{CompiledBinding StatusMessage}" />
+                        </StackPanel>
+
+                        <TextBox
+                            Grid.Column="1"
+                            Margin="0,0,12,0"
+                            VerticalAlignment="Center"
+                            Classes="search-box"
+                            Text="{CompiledBinding SearchQuery}"
+                            Watermark="Search comics...">
+                            <TextBox.InnerLeftContent>
+                                <PathIcon
+                                    Width="14"
+                                    Height="14"
+                                    Margin="10,0,0,0"
+                                    Data="{StaticResource IconSearch}"
+                                    Foreground="{StaticResource MutedTextBrush}" />
+                            </TextBox.InnerLeftContent>
+                        </TextBox>
+
+                        <StackPanel Grid.Column="2" VerticalAlignment="Center" Orientation="Horizontal" Spacing="10">
+                            <Button
+                                Classes="accent-red"
+                                Command="{CompiledBinding ImportComicCommand}"
+                                IsVisible="{CompiledBinding IsLibrarySection}">
+                                <StackPanel Orientation="Horizontal" Spacing="7">
+                                    <PathIcon Width="15" Height="15" Data="{StaticResource IconDocumentAdd}" Foreground="White" />
+                                    <TextBlock VerticalAlignment="Center" Text="Import Comic" />
+                                </StackPanel>
+                            </Button>
+
+                            <Button
+                                Classes="accent-red"
+                                Command="{CompiledBinding FolderVm.ImportFolderCommand}">
+                                <StackPanel Orientation="Horizontal" Spacing="7">
+                                    <PathIcon Width="15" Height="15" Data="{StaticResource IconFolderAdd}" Foreground="White" />
+                                    <TextBlock VerticalAlignment="Center" Text="Import Folder" />
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- Mobile / Compact Header (2 rows, zero horizontal clipping) -->
+                    <Grid
+                        Grid.Row="0"
+                        Margin="0,0,0,12"
+                        RowDefinitions="Auto,Auto"
+                        IsVisible="{CompiledBinding IsCompactLayout, RelativeSource={RelativeSource AncestorType=views:MainView}}">
+                        <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                <TextBlock
+                                    FontSize="20"
+                                    FontWeight="Bold"
+                                    Foreground="White"
+                                    Text="{CompiledBinding ActiveSection}" />
+                                <TextBlock
+                                    Margin="0,2,0,0"
+                                    FontSize="11"
+                                    Foreground="{StaticResource MutedTextBrush}"
+                                    Text="{CompiledBinding StatusMessage}"
+                                    TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center" Orientation="Horizontal" Spacing="8">
+                                <Button
+                                    Padding="10,8"
+                                    Classes="accent-red"
+                                    Command="{CompiledBinding ImportComicCommand}"
+                                    IsVisible="{CompiledBinding IsLibrarySection}"
+                                    ToolTip.Tip="Import Comic">
+                                    <PathIcon Width="16" Height="16" Data="{StaticResource IconDocumentAdd}" Foreground="White" />
+                                </Button>
+
+                                <Button
+                                    Padding="10,8"
+                                    Classes="accent-red"
+                                    Command="{CompiledBinding FolderVm.ImportFolderCommand}"
+                                    ToolTip.Tip="Import Folder">
+                                    <PathIcon Width="16" Height="16" Data="{StaticResource IconFolderAdd}" Foreground="White" />
+                                </Button>
+                            </StackPanel>
+                        </Grid>
+
+                        <TextBox
+                            Grid.Row="1"
+                            Margin="0,10,0,0"
+                            Classes="search-box"
+                            Text="{CompiledBinding SearchQuery}"
+                            Watermark="Search comics...">
+                            <TextBox.InnerLeftContent>
+                                <PathIcon
+                                    Width="14"
+                                    Height="14"
+                                    Margin="10,0,0,0"
+                                    Data="{StaticResource IconSearch}"
+                                    Foreground="{StaticResource MutedTextBrush}" />
+                            </TextBox.InnerLeftContent>
+                        </TextBox>
+                    </Grid>
 
                 <!-- Library (Recent / Currently Reading) View -->
                 <ScrollViewer
@@ -302,7 +368,7 @@
                         ItemsSource="{CompiledBinding FilteredComics}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
-                                <helpers:ResponsiveUniformGrid MinItemWidth="200" VerticalAlignment="Top" />
+                                <helpers:ResponsiveUniformGrid MinItemWidth="155" VerticalAlignment="Top" />
                             </ItemsPanelTemplate>
                         </ItemsControl.ItemsPanel>
                     </ItemsControl>
@@ -327,7 +393,7 @@
                             </ItemsControl.DataTemplates>
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
-                                    <helpers:ResponsiveUniformGrid MinItemWidth="200" VerticalAlignment="Top" />
+                                    <helpers:ResponsiveUniformGrid MinItemWidth="155" VerticalAlignment="Top" />
                                 </ItemsPanelTemplate>
                             </ItemsControl.ItemsPanel>
                         </ItemsControl>
@@ -366,7 +432,7 @@
                                 ItemsSource="{CompiledBinding FolderVm.FolderComics}">
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
-                                        <helpers:ResponsiveUniformGrid MinItemWidth="200" VerticalAlignment="Top" />
+                                        <helpers:ResponsiveUniformGrid MinItemWidth="155" VerticalAlignment="Top" />
                                     </ItemsPanelTemplate>
                                 </ItemsControl.ItemsPanel>
                             </ItemsControl>
@@ -374,6 +440,74 @@
                     </Grid>
                 </Grid>
             </Grid>
+            </Grid>
+
+            <!-- Mobile Bottom Navigation Bar (Visible when Width < 760) -->
+            <Border
+                Grid.Row="1"
+                Padding="8,6"
+                Background="{StaticResource SidebarBackgroundBrush}"
+                BorderBrush="{StaticResource SubtleBorderBrush}"
+                BorderThickness="0,1,0,0"
+                IsVisible="{CompiledBinding IsCompactLayout, RelativeSource={RelativeSource AncestorType=views:MainView}}">
+                <Grid ColumnDefinitions="*,*,*,*">
+                    <Button
+                        Grid.Column="0"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Center"
+                        Classes="nav-btn"
+                        Classes.active="{CompiledBinding IsLibraryNavActive}"
+                        Command="{CompiledBinding NavigateCommand}"
+                        CommandParameter="{x:Static helpers:AppConstants.SectionLibrary}">
+                        <StackPanel HorizontalAlignment="Center" Spacing="3">
+                            <PathIcon Width="18" Height="18" HorizontalAlignment="Center" Data="{StaticResource IconLibrary}" />
+                            <TextBlock HorizontalAlignment="Center" FontSize="11" Text="Library" />
+                        </StackPanel>
+                    </Button>
+
+                    <Button
+                        Grid.Column="1"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Center"
+                        Classes="nav-btn"
+                        Classes.active="{CompiledBinding IsFoldersSection}"
+                        Command="{CompiledBinding NavigateCommand}"
+                        CommandParameter="{x:Static helpers:AppConstants.SectionFolders}">
+                        <StackPanel HorizontalAlignment="Center" Spacing="3">
+                            <PathIcon Width="18" Height="18" HorizontalAlignment="Center" Data="{StaticResource IconFolder}" />
+                            <TextBlock HorizontalAlignment="Center" FontSize="11" Text="Folders" />
+                        </StackPanel>
+                    </Button>
+
+                    <Button
+                        Grid.Column="2"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Center"
+                        Classes="nav-btn"
+                        Classes.active="{CompiledBinding IsSearchNavActive}"
+                        Command="{CompiledBinding NavigateCommand}"
+                        CommandParameter="{x:Static helpers:AppConstants.SectionSearch}">
+                        <StackPanel HorizontalAlignment="Center" Spacing="3">
+                            <PathIcon Width="18" Height="18" HorizontalAlignment="Center" Data="{StaticResource IconSearch}" />
+                            <TextBlock HorizontalAlignment="Center" FontSize="11" Text="Search" />
+                        </StackPanel>
+                    </Button>
+
+                    <Button
+                        Grid.Column="3"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Center"
+                        Classes="nav-btn"
+                        Classes.active="{CompiledBinding IsSettingsNavActive}"
+                        Command="{CompiledBinding NavigateCommand}"
+                        CommandParameter="{x:Static helpers:AppConstants.SectionSettings}">
+                        <StackPanel HorizontalAlignment="Center" Spacing="3">
+                            <PathIcon Width="18" Height="18" HorizontalAlignment="Center" Data="{StaticResource IconSettings}" />
+                            <TextBlock HorizontalAlignment="Center" FontSize="11" Text="Settings" />
+                        </StackPanel>
+                    </Button>
+                </Grid>
+            </Border>
         </Grid>
 
         <!-- Integrated Reader Overlay -->

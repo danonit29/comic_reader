@@ -17,12 +17,38 @@ namespace ComicReader.Services.Interfaces
         int PageCount { get; }
 
         /// <summary>
+        /// True for vector formats (e.g. PDF) that gain sharpness when re-rendered at higher DPI during zoom.
+        /// </summary>
+        bool SupportsDynamicZoomDpi => false;
+
+        /// <summary>
         /// Renders a specific 0-based page index as an Avalonia Bitmap.
         /// </summary>
         Task<Bitmap?> RenderPageAsync(
             int pageIndex,
             int dpi = Helpers.AppConstants.DefaultRenderDpi,
             CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Renders a lightweight low-resolution preview Bitmap for instant slider/scroll display.
+        /// </summary>
+        Task<Bitmap?> RenderPreviewAsync(
+            int pageIndex,
+            int maxWidth = Helpers.AppConstants.PreviewDecodeWidth,
+            CancellationToken cancellationToken = default)
+            => RenderPageAsync(pageIndex, Helpers.AppConstants.PreviewRenderDpi, cancellationToken);
+
+        /// <summary>
+        /// Extracts raw compressed image bytes (if supported, e.g. ZIP/CBZ) for low-RAM caching.
+        /// </summary>
+        Task<byte[]?> ExtractRawBytesAsync(int pageIndex, CancellationToken cancellationToken = default)
+            => Task.FromResult<byte[]?>(null);
+
+        /// <summary>
+        /// Decodes a Full-Quality Bitmap directly from cached raw compressed bytes in RAM.
+        /// </summary>
+        Task<Bitmap?> DecodeFromRawBytesAsync(byte[] rawBytes, CancellationToken cancellationToken = default)
+            => Task.FromResult<Bitmap?>(null);
     }
 
     /// <summary>
