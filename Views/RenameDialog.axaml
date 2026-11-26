@@ -1,0 +1,48 @@
+<Window
+    x:Class="ComicReader.Views.RenameDialog"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Rename Comic"
+    Width="420"
+    Height="200"
+    Background="#1E1E1E"
+    CanResize="False"
+    ExtendClientAreaChromeHints="NoChrome"
+    ExtendClientAreaToDecorationsHint="True"
+    WindowStartupLocation="CenterOwner">
+
+    <Border BorderBrush="#33FFFFFF" BorderThickness="1">
+        <Grid Margin="20" RowDefinitions="Auto,Auto,*,Auto">
+            <TextBlock
+                Grid.Row="0"
+                Margin="0,0,0,12"
+                FontSize="16"
+                FontWeight="SemiBold"
+                Foreground="White"
+                Text="Rename Display Title" />
+
+            <TextBox
+                x:Name="NameTextBox"
+                Grid.Row="1"
+                Classes="search-box"
+                Watermark="Enter comic name..." />
+
+            <StackPanel
+                Grid.Row="3"
+                HorizontalAlignment="Right"
+                Orientation="Horizontal"
+                Spacing="10">
+                <Button
+                    Classes="secondary-btn"
+                    Click="OnCancelClick"
+                    Content="Cancel"
+                    IsCancel="True" />
+                <Button
+                    Classes="accent-red"
+                    Click="OnSaveClick"
+                    Content="Save"
+                    IsDefault="True" />
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>
