@@ -20,7 +20,7 @@ namespace ComicReader.Views
         // ── constants ──────────────────────────────────────────────────────────
         private const double AutoScrollDeadZone   = 8.0;
         private const double AutoScrollSpeedFactor = 0.28;
-        private const int    SliderDebounceMs      = 200;
+        private const int    SliderDebounceMs      = 120;
         private const int    ScrollThrottleMs      = 80;
 
         // ── private state ──────────────────────────────────────────────────────
@@ -100,6 +100,7 @@ namespace ComicReader.Views
             PageSlider.AddHandler(PointerCaptureLostEvent, OnPageSliderPointerCaptureLost, RoutingStrategies.Bubble, handledEventsToo: true);
             PageSlider.AddHandler(Thumb.DragStartedEvent,  OnPageSliderDragStarted,  RoutingStrategies.Bubble, handledEventsToo: true);
             PageSlider.AddHandler(Thumb.DragCompletedEvent, OnPageSliderDragCompleted, RoutingStrategies.Bubble, handledEventsToo: true);
+            PageSlider.PropertyChanged += OnPageSliderPropertyChanged;
 
             _sliderDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(SliderDebounceMs) };
             _sliderDebounceTimer.Tick += OnSliderDebounceTick;
@@ -333,6 +334,11 @@ namespace ComicReader.Views
                 if (sv is not null)
                 {
                     Control? container = PagesListBox.ContainerFromIndex(pageIndex);
+                    if (container is null)
+                    {
+                        PagesListBox.ScrollIntoView(item);
+                        container = PagesListBox.ContainerFromIndex(pageIndex);
+                    }
                     if (container is not null)
                     {
                         Point? pt = container.TranslatePoint(new Point(0, 0), sv);
@@ -648,9 +654,25 @@ namespace ComicReader.Views
 
             _isDraggingSlider = false;
             _sliderDebounceTimer?.Stop();
-            PageSlider.Value = targetPage;
-            _subscribedViewModel.NavigateToPage(targetPage);
+            PageSlider.SetCurrentValue(RangeBase.ValueProperty, (double)targetPage);
+            _subscribedViewModel.JumpToPage(targetPage);
             e.Handled = true;
+        }
+
+        private void OnPageSliderPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
+        {
+            if (e.Property != RangeBase.ValueProperty || !_isDraggingSlider) return;
+            if (_subscribedViewModel is null || _subscribedViewModel.TotalPages <= 0) return;
+
+            int target = Math.Clamp(
+                (int)Math.Round(PageSlider.Value),
+                1,
+                _subscribedViewModel.TotalPages);
+
+            // Scroll viewport in real-time while dragging (like the right scrollbar),
+            // and debounce heavy page decoding until drag pauses/ends.
+            _subscribedViewModel.PreviewScrollToPage(target);
+            ScheduleSliderDebounce();
         }
 
         private void OnPageSliderDragStarted(object? sender, VectorEventArgs e)

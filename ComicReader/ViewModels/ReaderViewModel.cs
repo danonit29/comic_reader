@@ -255,6 +255,21 @@ namespace ComicReader.ViewModels
         }
 
         /// <summary>
+        /// Scrolls the viewport immediately to the previewed page while dragging the slider,
+        /// without triggering heavy background decoding for every intermediate page.
+        /// </summary>
+        public void PreviewScrollToPage(int pageNumber)
+        {
+            if (pageNumber < 1 || pageNumber > TotalPages) return;
+            if (pageNumber == CurrentPage) return;
+
+            _scrollDirection = pageNumber >= CurrentPage ? 1 : -1;
+            CurrentPage = pageNumber;
+            _hasRestoredInitialScroll = true;
+            ScrollToPageRequested?.Invoke(pageNumber);
+        }
+
+        /// <summary>
         /// Unified navigation entry point (slider, Next/Prev, keyboard, direct page input).
         /// Cancels stale loads, displays cached page immediately or shows loading indicator, and loads window.
         /// </summary>
@@ -294,7 +309,7 @@ namespace ComicReader.ViewModels
                 ScrollToPageRequested?.Invoke(pageNumber);
             }
 
-            _ = EnsurePageWindowLoadedAsync(pageNumber - 1, cancelPrevious: true);
+            _ = EnsurePageWindowLoadedAsync(pageNumber - 1, cancelPrevious: true, reanchorAfterLoad: true);
             await SaveProgressAsync();
         }
 
@@ -501,7 +516,7 @@ namespace ComicReader.ViewModels
             Pages = items;
         }
 
-        private async Task EnsurePageWindowLoadedAsync(int centerIndex, bool cancelPrevious = false)
+        private async Task EnsurePageWindowLoadedAsync(int centerIndex, bool cancelPrevious = false, bool reanchorAfterLoad = false)
         {
             if (_readSession is null || Pages.Count == 0) return;
 
@@ -580,6 +595,18 @@ namespace ComicReader.ViewModels
                     _hasRestoredInitialScroll = true;
                     Dispatcher.UIThread.Post(() =>
                         RestoreExactPagePositionRequested?.Invoke(clampedCenter + 1, _currentPageLocalRatio));
+                }
+                else if (reanchorAfterLoad && centerNeedsLoad)
+                {
+                    // Re-anchor viewport onto the target page after its true Image height is measured,
+                    // preventing VirtualizingStackPanel AverageItemHeight drift from landing on an evicted page.
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        if (generation == Interlocked.Read(ref _windowGeneration))
+                        {
+                            ScrollToPageRequested?.Invoke(clampedCenter + 1);
+                        }
+                    }, DispatcherPriority.Loaded);
                 }
 
                 // Preload nearby pages in background, prioritizing the user's scroll direction.
