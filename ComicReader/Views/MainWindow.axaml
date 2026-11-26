@@ -1,0 +1,92 @@
+<Window
+    x:Class="ComicReader.Views.MainWindow"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:helpers="using:ComicReader.Helpers"
+    xmlns:vm="using:ComicReader.ViewModels"
+    xmlns:views="using:ComicReader.Views"
+    Title="ComicReader"
+    Width="1280"
+    Height="800"
+    MinWidth="960"
+    MinHeight="640"
+    Background="#1E1E1E"
+    ExtendClientAreaChromeHints="NoChrome"
+    ExtendClientAreaTitleBarHeightHint="44"
+    ExtendClientAreaToDecorationsHint="True"
+    WindowStartupLocation="CenterScreen"
+    x:DataType="vm:MainViewModel"
+    mc:Ignorable="d">
+
+    <Border BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="1">
+        <Grid RowDefinitions="Auto,*">
+            <!-- Custom Title Bar (Desktop Only) -->
+            <Border
+                Grid.Row="0"
+                Height="44"
+                Background="{StaticResource ChromeBackgroundBrush}"
+                BorderBrush="{StaticResource SubtleBorderBrush}"
+                BorderThickness="0,0,0,1"
+                DoubleTapped="OnTitleBarDoubleTapped"
+                PointerPressed="OnTitleBarPointerPressed">
+                <Grid ColumnDefinitions="Auto,*,Auto">
+                    <!-- App Icon and Title -->
+                    <StackPanel
+                        Grid.Column="0"
+                        Margin="16,0,0,0"
+                        VerticalAlignment="Center"
+                        Orientation="Horizontal"
+                        Spacing="10">
+                        <Border
+                            Width="22"
+                            Height="22"
+                            Background="{StaticResource AccentRedBrush}"
+                            CornerRadius="4">
+                            <PathIcon
+                                Width="11"
+                                Height="11"
+                                Data="{StaticResource IconLibrary}"
+                                Foreground="White" />
+                        </Border>
+                        <TextBlock
+                            VerticalAlignment="Center"
+                            FontSize="13"
+                            FontWeight="SemiBold"
+                            Foreground="#F4F4F5"
+                            Text="ComicReader" />
+                    </StackPanel>
+
+                    <!-- Draggable Spacer -->
+                    <Border Grid.Column="1" Background="Transparent" />
+
+                    <!-- Custom Minimize / Maximize / Close Buttons -->
+                    <StackPanel Grid.Column="2" Orientation="Horizontal">
+                        <Button
+                            Classes="titlebar-btn"
+                            Click="OnMinimizeClick"
+                            ToolTip.Tip="Minimize">
+                            <PathIcon Width="11" Height="11" Data="{StaticResource IconMinimize}" />
+                        </Button>
+                        <Button
+                            Classes="titlebar-btn"
+                            Click="OnMaximizeRestoreClick"
+                            ToolTip.Tip="Maximize / Restore">
+                            <PathIcon Width="11" Height="11" Data="{StaticResource IconMaximize}" />
+                        </Button>
+                        <Button
+                            Classes="titlebar-btn titlebar-close"
+                            Click="OnCloseClick"
+                            ToolTip.Tip="Close">
+                            <PathIcon Width="11" Height="11" Data="{StaticResource IconClose}" />
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- Cross-Platform Workspace View -->
+            <views:MainView Grid.Row="1" />
+        </Grid>
+    </Border>
+</Window>

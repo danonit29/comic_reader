@@ -1,0 +1,418 @@
+<UserControl
+    x:Class="ComicReader.Views.MainView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:helpers="using:ComicReader.Helpers"
+    xmlns:models="using:ComicReader.Models"
+    xmlns:converters="using:ComicReader.Helpers.Converters"
+    xmlns:vm="using:ComicReader.ViewModels"
+    xmlns:views="using:ComicReader.Views"
+    Background="#1E1E1E"
+    x:DataType="vm:MainViewModel"
+    mc:Ignorable="d">
+
+    <UserControl.Resources>
+        <converters:PathToImageConverter x:Key="PathToImageConverter" />
+
+        <!-- Shared Manga/Comic Card DataTemplate with Hover Scale, BoxShadow, #C42B1C Border & ProgressBar -->
+        <DataTemplate x:Key="ComicCardTemplate" x:DataType="models:ComicBook">
+            <Border
+                Margin="8"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch"
+                Classes="comic-card"
+                Tapped="OnComicCardTapped">
+
+                <Border.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem
+                            Command="{CompiledBinding ViewModel.RenameComicCommand, RelativeSource={RelativeSource AncestorType=views:MainView}}"
+                            CommandParameter="{CompiledBinding}"
+                            Header="Rename" />
+                        <MenuItem
+                            Command="{CompiledBinding ViewModel.SelectThumbnailCommand, RelativeSource={RelativeSource AncestorType=views:MainView}}"
+                            CommandParameter="{CompiledBinding}"
+                            Header="Change Thumbnail" />
+                    </ContextMenu>
+                </Border.ContextMenu>
+
+                <Border ClipToBounds="True" CornerRadius="7">
+                    <Grid RowDefinitions="260,*,3">
+                        <!-- Cover Image clipped to rounded top corners + Hover-Reveal Overlay Buttons -->
+                        <Border
+                            Grid.Row="0"
+                            Background="#141414"
+                            ClipToBounds="True"
+                            CornerRadius="8,8,0,0">
+                            <Grid>
+                                <Image
+                                    Source="{CompiledBinding CoverImagePath, Converter={StaticResource PathToImageConverter}}"
+                                    Stretch="UniformToFill" />
+
+                                <StackPanel
+                                    Margin="8"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Top"
+                                    Classes="card-overlay-actions"
+                                    Orientation="Horizontal"
+                                    Spacing="6">
+                                    <Button
+                                        Classes="card-overlay-btn"
+                                        Command="{CompiledBinding ViewModel.RenameComicCommand, RelativeSource={RelativeSource AncestorType=views:MainView}}"
+                                        CommandParameter="{CompiledBinding}"
+                                        ToolTip.Tip="Rename">
+                                        <PathIcon Width="14" Height="14" Data="{StaticResource IconEdit}" Foreground="White" />
+                                    </Button>
+                                    <Button
+                                        Classes="card-overlay-btn"
+                                        Command="{CompiledBinding ViewModel.SelectThumbnailCommand, RelativeSource={RelativeSource AncestorType=views:MainView}}"
+                                        CommandParameter="{CompiledBinding}"
+                                        ToolTip.Tip="Change Thumbnail">
+                                        <PathIcon Width="14" Height="14" Data="{StaticResource IconImageEdit}" Foreground="White" />
+                                    </Button>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- DisplayName, ParentFolderName Subtitle, and Current Page -->
+                        <StackPanel Grid.Row="1" Margin="12,10,12,10" VerticalAlignment="Top">
+                            <TextBlock
+                                FontSize="14"
+                                FontWeight="SemiBold"
+                                Foreground="White"
+                                Text="{CompiledBinding DisplayName}"
+                                TextTrimming="CharacterEllipsis" />
+
+                            <TextBlock
+                                Margin="0,2,0,0"
+                                FontSize="11"
+                                Foreground="#9CA3AF"
+                                IsVisible="{CompiledBinding HasParentFolder}"
+                                Text="{CompiledBinding ParentFolderName}"
+                                TextTrimming="CharacterEllipsis" />
+
+                            <TextBlock
+                                Margin="0,4,0,0"
+                                FontSize="12"
+                                Foreground="{StaticResource MutedTextBrush}"
+                                Text="{CompiledBinding PageStatusText}" />
+                        </StackPanel>
+
+                        <!-- Accent Red Reading Progress Bar at Card Bottom -->
+                        <ProgressBar
+                            Grid.Row="2"
+                            Classes="red-progress"
+                            Maximum="100"
+                            Minimum="0"
+                            Value="{CompiledBinding ProgressPercentage, Mode=OneWay}" />
+                    </Grid>
+                </Border>
+            </Border>
+        </DataTemplate>
+
+        <!-- Folder Card DataTemplate with Hover-Reveal Rename Button -->
+        <DataTemplate x:Key="FolderCardTemplate" x:DataType="models:ComicFolder">
+            <Border
+                Margin="8"
+                Padding="16"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch"
+                Classes="comic-card"
+                Tapped="OnFolderCardTapped">
+
+                <Border.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem
+                            Command="{CompiledBinding ViewModel.FolderVm.RenameFolderCommand, RelativeSource={RelativeSource AncestorType=views:MainView}}"
+                            CommandParameter="{CompiledBinding}"
+                            Header="Rename Folder" />
+                    </ContextMenu>
+                </Border.ContextMenu>
+
+                <Grid>
+                    <Button
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Top"
+                        Classes="card-overlay-btn folder-overlay-btn"
+                        Command="{CompiledBinding ViewModel.FolderVm.RenameFolderCommand, RelativeSource={RelativeSource AncestorType=views:MainView}}"
+                        CommandParameter="{CompiledBinding}"
+                        ToolTip.Tip="Rename Folder">
+                        <PathIcon Width="14" Height="14" Data="{StaticResource IconEdit}" Foreground="White" />
+                    </Button>
+
+                    <StackPanel Margin="0,14,0,0">
+                        <PathIcon
+                            Width="48"
+                            Height="48"
+                            Margin="0,6,0,12"
+                            HorizontalAlignment="Left"
+                            Data="{StaticResource IconFolder}"
+                            Foreground="{StaticResource AccentRedBrush}" />
+
+                        <TextBlock
+                            FontSize="15"
+                            FontWeight="SemiBold"
+                            Foreground="White"
+                            Text="{CompiledBinding DisplayName}"
+                            TextTrimming="CharacterEllipsis" />
+
+                        <TextBlock
+                            Margin="0,4,0,0"
+                            FontSize="12"
+                            Foreground="{StaticResource MutedTextBrush}"
+                            Text="{CompiledBinding ComicCountText}" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <Grid>
+        <!-- Main Workspace -->
+        <Grid ColumnDefinitions="220,*">
+            <!-- Left Sidebar Navigation -->
+            <Border
+                Grid.Column="0"
+                Padding="12,16"
+                Background="{StaticResource SidebarBackgroundBrush}"
+                BorderBrush="{StaticResource SubtleBorderBrush}"
+                BorderThickness="0,0,1,0">
+                <StackPanel>
+                    <TextBlock
+                        Margin="10,0,0,16"
+                        FontSize="11"
+                        FontWeight="SemiBold"
+                        Foreground="{StaticResource MutedTextBrush}"
+                        Text="NAVIGATION" />
+
+                    <Button
+                        Classes="nav-btn"
+                        Classes.active="{CompiledBinding IsLibraryNavActive}"
+                        Command="{CompiledBinding NavigateCommand}"
+                        CommandParameter="{x:Static helpers:AppConstants.SectionLibrary}">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <PathIcon Width="16" Height="16" Data="{StaticResource IconLibrary}" />
+                            <TextBlock VerticalAlignment="Center" Text="Library" />
+                        </StackPanel>
+                    </Button>
+
+                    <Button
+                        Classes="nav-btn"
+                        Classes.active="{CompiledBinding IsFoldersSection}"
+                        Command="{CompiledBinding NavigateCommand}"
+                        CommandParameter="{x:Static helpers:AppConstants.SectionFolders}">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <PathIcon Width="16" Height="16" Data="{StaticResource IconFolder}" />
+                            <TextBlock VerticalAlignment="Center" Text="Folders" />
+                        </StackPanel>
+                    </Button>
+
+                    <Button
+                        Classes="nav-btn"
+                        Classes.active="{CompiledBinding IsSearchNavActive}"
+                        Command="{CompiledBinding NavigateCommand}"
+                        CommandParameter="{x:Static helpers:AppConstants.SectionSearch}">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <PathIcon Width="16" Height="16" Data="{StaticResource IconSearch}" />
+                            <TextBlock VerticalAlignment="Center" Text="Search" />
+                        </StackPanel>
+                    </Button>
+
+                    <Button
+                        Classes="nav-btn"
+                        Classes.active="{CompiledBinding IsSettingsNavActive}"
+                        Command="{CompiledBinding NavigateCommand}"
+                        CommandParameter="{x:Static helpers:AppConstants.SectionSettings}">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <PathIcon Width="16" Height="16" Data="{StaticResource IconSettings}" />
+                            <TextBlock VerticalAlignment="Center" Text="Settings" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </Border>
+
+            <!-- Right Workspace -->
+            <Grid Grid.Column="1" Margin="24,16,24,24" RowDefinitions="Auto,*">
+                <!-- Top Bar -->
+                <Grid Grid.Row="0" Margin="0,0,0,20" ColumnDefinitions="*,260,Auto">
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                        <TextBlock
+                            FontSize="22"
+                            FontWeight="Bold"
+                            Foreground="White"
+                            Text="{CompiledBinding ActiveSection}" />
+                        <TextBlock
+                            Margin="0,2,0,0"
+                            FontSize="12"
+                            Foreground="{StaticResource MutedTextBrush}"
+                            Text="{CompiledBinding StatusMessage}" />
+                    </StackPanel>
+
+                    <TextBox
+                        Grid.Column="1"
+                        Margin="0,0,12,0"
+                        VerticalAlignment="Center"
+                        Classes="search-box"
+                        Text="{CompiledBinding SearchQuery}"
+                        Watermark="Search comics...">
+                        <TextBox.InnerLeftContent>
+                            <PathIcon
+                                Width="14"
+                                Height="14"
+                                Margin="10,0,0,0"
+                                Data="{StaticResource IconSearch}"
+                                Foreground="{StaticResource MutedTextBrush}" />
+                        </TextBox.InnerLeftContent>
+                    </TextBox>
+
+                    <!-- Top-right Import Actions -->
+                    <StackPanel Grid.Column="2" VerticalAlignment="Center" Orientation="Horizontal" Spacing="10">
+                        <Button
+                            Classes="accent-red"
+                            Command="{CompiledBinding ImportComicCommand}"
+                            IsVisible="{CompiledBinding IsLibrarySection}">
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                                <PathIcon Width="15" Height="15" Data="{StaticResource IconDocumentAdd}" Foreground="White" />
+                                <TextBlock VerticalAlignment="Center" Text="Import Comic" />
+                            </StackPanel>
+                        </Button>
+
+                        <Button
+                            Classes="accent-red"
+                            Command="{CompiledBinding FolderVm.ImportFolderCommand}">
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                                <PathIcon Width="15" Height="15" Data="{StaticResource IconFolderAdd}" Foreground="White" />
+                                <TextBlock VerticalAlignment="Center" Text="Import Folder" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+
+                <!-- Library (Recent / Currently Reading) View -->
+                <ScrollViewer
+                    Grid.Row="1"
+                    Padding="0,0,16,0"
+                    IsVisible="{CompiledBinding IsLibrarySection}"
+                    VerticalScrollBarVisibility="Auto">
+                    <ItemsControl
+                        Margin="-8,0,-8,0"
+                        ItemTemplate="{StaticResource ComicCardTemplate}"
+                        ItemsSource="{CompiledBinding FilteredComics}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <helpers:ResponsiveUniformGrid MinItemWidth="200" VerticalAlignment="Top" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <!-- Folders View -->
+                <Grid Grid.Row="1" IsVisible="{CompiledBinding IsFoldersSection}">
+                    <ScrollViewer
+                        Padding="0,0,16,0"
+                        IsVisible="{CompiledBinding FolderVm.IsOutsideFolder}"
+                        VerticalScrollBarVisibility="Auto">
+                        <ItemsControl
+                            Margin="-8,0,-8,0"
+                            ItemsSource="{CompiledBinding FolderVm.CombinedItems}">
+                            <ItemsControl.DataTemplates>
+                                <DataTemplate DataType="{x:Type models:ComicFolder}">
+                                    <ContentControl Content="{CompiledBinding}" ContentTemplate="{StaticResource FolderCardTemplate}" />
+                                </DataTemplate>
+                                <DataTemplate DataType="{x:Type models:ComicBook}">
+                                    <ContentControl Content="{CompiledBinding}" ContentTemplate="{StaticResource ComicCardTemplate}" />
+                                </DataTemplate>
+                            </ItemsControl.DataTemplates>
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <helpers:ResponsiveUniformGrid MinItemWidth="200" VerticalAlignment="Top" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                        </ItemsControl>
+                    </ScrollViewer>
+
+                    <!-- Inside Selected Folder -->
+                    <Grid IsVisible="{CompiledBinding FolderVm.IsInsideFolder}" RowDefinitions="Auto,*">
+                        <StackPanel
+                            Grid.Row="0"
+                            Margin="0,0,0,16"
+                            Orientation="Horizontal">
+                            <Button
+                                Classes="secondary-btn"
+                                Command="{CompiledBinding FolderVm.BackToFoldersCommand}">
+                                <StackPanel Orientation="Horizontal" Spacing="7">
+                                    <PathIcon Width="14" Height="14" Data="{StaticResource IconArrowLeft}" Foreground="White" />
+                                    <TextBlock VerticalAlignment="Center" Text="All Folders" />
+                                </StackPanel>
+                            </Button>
+                            <TextBlock
+                                Margin="14,0,0,0"
+                                VerticalAlignment="Center"
+                                FontSize="16"
+                                FontWeight="SemiBold"
+                                Foreground="White"
+                                Text="{CompiledBinding FolderVm.SelectedFolder.DisplayName}" />
+                        </StackPanel>
+
+                        <ScrollViewer
+                            Grid.Row="1"
+                            Padding="0,0,16,0"
+                            VerticalScrollBarVisibility="Auto">
+                            <ItemsControl
+                                Margin="-8,0,-8,0"
+                                ItemTemplate="{StaticResource ComicCardTemplate}"
+                                ItemsSource="{CompiledBinding FolderVm.FolderComics}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <helpers:ResponsiveUniformGrid MinItemWidth="200" VerticalAlignment="Top" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </Grid>
+                </Grid>
+            </Grid>
+        </Grid>
+
+        <!-- Integrated Reader Overlay -->
+        <Border
+            Classes="reader-overlay"
+            Classes.open="{CompiledBinding IsReaderOpen}"
+            IsVisible="{CompiledBinding IsReaderOpen}">
+            <views:ReaderView DataContext="{CompiledBinding ActiveReader}" />
+        </Border>
+
+        <!-- Bottom-Right Animated Toast Notification (Transitions: Opacity + TranslateY) -->
+        <Border
+            Margin="0,0,28,28"
+            Padding="16,12"
+            HorizontalAlignment="Right"
+            VerticalAlignment="Bottom"
+            Background="#2D2D2D"
+            BorderThickness="1.5"
+            Classes="toast-notification"
+            Classes.error="{CompiledBinding IsNotificationError}"
+            Classes.visible="{CompiledBinding IsNotificationVisible}"
+            CornerRadius="8"
+            IsHitTestVisible="False">
+            <Grid ColumnDefinitions="Auto,*">
+                <PathIcon
+                    Grid.Column="0"
+                    Width="18"
+                    Height="18"
+                    Margin="0,0,10,0"
+                    Classes="toast-icon"
+                    Data="{StaticResource IconCheckCircle}" />
+                <TextBlock
+                    Grid.Column="1"
+                    VerticalAlignment="Center"
+                    FontSize="13"
+                    FontWeight="SemiBold"
+                    Foreground="White"
+                    Text="{CompiledBinding NotificationMessage}" />
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>
