@@ -41,6 +41,11 @@ namespace ComicReader.Services.Interfaces
         Task<string> SaveCoverImageAsync(string comicId, Bitmap coverImage);
 
         /// <summary>
+        /// Saves a user-chosen bitmap thumbnail with a unique filename so UI image caches refresh immediately.
+        /// </summary>
+        Task<string> SaveCustomThumbnailBitmapAsync(string comicId, Bitmap coverImage);
+
+        /// <summary>
         /// Copies a user-selected thumbnail image into the local cache directory and returns its path.
         /// </summary>
         Task<string> SaveCustomThumbnailAsync(string comicId, string sourceImagePath);

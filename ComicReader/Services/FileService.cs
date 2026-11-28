@@ -154,6 +154,23 @@ namespace ComicReader.Services
         }
 
         /// <inheritdoc />
+        public async Task<string> SaveCustomThumbnailBitmapAsync(string comicId, Bitmap coverImage)
+        {
+            Directory.CreateDirectory(AppConstants.CoversDirectory);
+            string outputPath = Path.Combine(
+                AppConstants.CoversDirectory,
+                $"{comicId}_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.png");
+
+            await Task.Run(() =>
+            {
+                using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None);
+                coverImage.Save(fileStream);
+            });
+
+            return outputPath;
+        }
+
+        /// <inheritdoc />
         public async Task<string> SaveCustomThumbnailAsync(string comicId, string sourceImagePath)
         {
             Directory.CreateDirectory(AppConstants.CoversDirectory);

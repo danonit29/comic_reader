@@ -65,6 +65,71 @@
             <Setter Property="Background" Value="#C42B1C" />
             <Setter Property="CornerRadius" Value="8" />
         </Style>
+
+        <!-- Bookmark Sidebar ListBox: strip harsh default ListBoxItem hover/selection -->
+        <Style Selector="ListBox#BookmarksListBox ListBoxItem">
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="0,3" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="ListBox#BookmarksListBox ListBoxItem:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         ListBox#BookmarksListBox ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter,
+                         ListBox#BookmarksListBox ListBoxItem:selected:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         ListBox#BookmarksListBox ListBoxItem:pressed /template/ ContentPresenter#PART_ContentPresenter,
+                         ListBox#BookmarksListBox ListBoxItem:focus /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+        </Style>
+
+        <!-- Smooth hover animation for Bookmark items -->
+        <Style Selector="Button.bookmark-item-btn">
+            <Setter Property="Background" Value="#242428" />
+            <Setter Property="BorderBrush" Value="#26FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="12,9" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="RenderTransform" Value="translateX(0px)" />
+            <Setter Property="Transitions">
+                <Transitions>
+                    <BrushTransition Property="Background" Duration="0:0:0.18" Easing="CubicEaseOut" />
+                    <BrushTransition Property="BorderBrush" Duration="0:0:0.18" Easing="CubicEaseOut" />
+                    <TransformOperationsTransition Property="RenderTransform" Duration="0:0:0.15" Easing="CubicEaseOut" />
+                </Transitions>
+            </Setter>
+        </Style>
+        <Style Selector="Button.bookmark-item-btn:pointerover">
+            <Setter Property="RenderTransform" Value="translateX(2px)" />
+        </Style>
+        <Style Selector="Button.bookmark-item-btn:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#323238" />
+            <Setter Property="BorderBrush" Value="#C42B1C" />
+        </Style>
+        <Style Selector="Button.bookmark-item-btn:pressed /template/ ContentPresenter">
+            <Setter Property="Background" Value="#2A2A30" />
+        </Style>
+
+        <Style Selector="Button.bookmark-delete-btn">
+            <Setter Property="Background" Value="#281818" />
+            <Setter Property="BorderBrush" Value="#44C42B1C" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Foreground" Value="#F87171" />
+            <Setter Property="Padding" Value="10,8" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Transitions">
+                <Transitions>
+                    <BrushTransition Property="Background" Duration="0:0:0.15" />
+                    <BrushTransition Property="BorderBrush" Duration="0:0:0.15" />
+                </Transitions>
+            </Setter>
+        </Style>
+        <Style Selector="Button.bookmark-delete-btn:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#4E1C1C" />
+            <Setter Property="BorderBrush" Value="#EF4444" />
+        </Style>
     </UserControl.Styles>
 
     <Grid
@@ -138,6 +203,14 @@
                     TextTrimming="CharacterEllipsis" />
 
                 <StackPanel Grid.Column="2" VerticalAlignment="Center" Orientation="Horizontal" Spacing="4">
+                    <Button
+                        Classes="reader-toolbar-btn"
+                        Classes.bookmarked="{CompiledBinding IsFullScreen, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
+                        Click="OnToggleFullScreenClick"
+                        ToolTip.Tip="Toàn màn hình (F11)">
+                        <PathIcon Width="16" Height="16" Data="{StaticResource IconFullscreen}" Foreground="White" />
+                    </Button>
+
                     <Button
                         Classes="reader-toolbar-btn"
                         Command="{CompiledBinding ZoomOutCommand}"
@@ -331,59 +404,56 @@
         <Border
             Grid.Row="1"
             ZIndex="40"
-            Width="290"
+            Width="320"
             HorizontalAlignment="Right"
             VerticalAlignment="Stretch"
-            Background="#F01A1A1A"
+            Background="#F21A1A1A"
             BorderBrush="{StaticResource SubtleBorderBrush}"
             BorderThickness="1,0,0,0"
             IsVisible="{CompiledBinding IsBookmarkPanelOpen}">
-            <Grid Margin="12" RowDefinitions="Auto,*,Auto">
-                <Grid Grid.Row="0" Margin="0,0,0,10" ColumnDefinitions="*,Auto">
+            <Grid Margin="14" RowDefinitions="Auto,*,Auto">
+                <Grid Grid.Row="0" Margin="0,0,0,12" ColumnDefinitions="*,Auto">
                     <TextBlock
                         Grid.Column="0"
                         VerticalAlignment="Center"
-                        FontSize="14"
+                        FontSize="16"
                         FontWeight="SemiBold"
                         Foreground="White"
                         Text="Danh sách Bookmark" />
                     <Button
                         Grid.Column="1"
-                        Padding="6,2"
+                        Padding="8,4"
                         Classes="reader-toolbar-btn"
                         Command="{CompiledBinding ToggleBookmarkPanelCommand}"
                         Content="✕" />
                 </Grid>
 
                 <ListBox
+                    x:Name="BookmarksListBox"
                     Grid.Row="1"
                     Background="Transparent"
                     BorderThickness="0"
                     ItemsSource="{CompiledBinding Bookmarks}">
                     <ListBox.ItemTemplate>
                         <DataTemplate x:DataType="models:Bookmark">
-                            <Grid Margin="0,2" ColumnDefinitions="*,Auto">
+                            <Grid ColumnDefinitions="*,Auto">
                                 <Button
                                     Grid.Column="0"
                                     HorizontalAlignment="Stretch"
                                     HorizontalContentAlignment="Left"
-                                    Background="#262626"
-                                    BorderBrush="#33FFFFFF"
-                                    BorderThickness="1"
-                                    CornerRadius="6"
-                                    Padding="10,7"
+                                    Classes="bookmark-item-btn"
                                     Command="{CompiledBinding ViewModel.NavigateToBookmarkCommand, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
                                     CommandParameter="{CompiledBinding}">
-                                    <StackPanel Spacing="2">
+                                    <StackPanel Spacing="3">
                                         <TextBlock
-                                            FontSize="12"
+                                            FontSize="15"
                                             FontWeight="SemiBold"
                                             Foreground="White"
                                             Text="{CompiledBinding DisplayLabel}"
                                             TextTrimming="CharacterEllipsis" />
                                         <TextBlock
-                                            FontSize="11"
-                                            Foreground="#9CA3AF"
+                                            FontSize="13"
+                                            Foreground="#B4B4BC"
                                             Text="{CompiledBinding Note}"
                                             TextTrimming="CharacterEllipsis" />
                                     </StackPanel>
@@ -391,14 +461,9 @@
 
                                 <Button
                                     Grid.Column="1"
-                                    Margin="4,0,0,0"
-                                    Padding="8,6"
+                                    Margin="6,0,0,0"
                                     VerticalAlignment="Center"
-                                    Background="#2A1A1A"
-                                    BorderBrush="#55C42B1C"
-                                    BorderThickness="1"
-                                    CornerRadius="6"
-                                    Foreground="#F87171"
+                                    Classes="bookmark-delete-btn"
                                     Content="✕"
                                     ToolTip.Tip="Xóa bookmark"
                                     Command="{CompiledBinding ViewModel.RemoveBookmarkCommand, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
@@ -410,9 +475,9 @@
 
                 <TextBlock
                     Grid.Row="2"
-                    Margin="0,8,0,0"
-                    FontSize="11"
-                    Foreground="#9CA3AF"
+                    Margin="0,10,0,0"
+                    FontSize="12.5"
+                    Foreground="#A1A1AA"
                     Text="Bấm vào bookmark để nhảy tới đúng chương và trang."
                     TextWrapping="Wrap" />
             </Grid>

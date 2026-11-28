@@ -26,6 +26,8 @@ namespace ComicReader.ViewModels
         private readonly IBookmarkService _bookmarkService;
         private LibraryStore _libraryStore = new();
         private CancellationTokenSource? _notificationCts;
+        private CancellationTokenSource? _thumbnailLoadCts;
+        private bool _isSettingThumbnailChapterProgrammatically;
 
         [ObservableProperty]
         private ObservableCollection<ComicBook> _filteredComics = new();
@@ -59,6 +61,27 @@ namespace ComicReader.ViewModels
 
         [ObservableProperty]
         private bool _isNotificationError;
+
+        [ObservableProperty]
+        private bool _isThumbnailPickerOpen;
+
+        [ObservableProperty]
+        private ComicBook? _thumbnailTargetComic;
+
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(HasMultipleThumbnailChapters))]
+        private ObservableCollection<ChapterModel> _thumbnailChapters = new();
+
+        [ObservableProperty]
+        private ChapterModel? _selectedThumbnailChapter;
+
+        [ObservableProperty]
+        private ObservableCollection<ThumbnailPageOption> _thumbnailPageOptions = new();
+
+        [ObservableProperty]
+        private bool _isLoadingThumbnailPages;
+
+        public bool HasMultipleThumbnailChapters => ThumbnailChapters.Count > 1;
 
         /// <summary>
         /// Sub-ViewModel managing the Folders navigation section.
@@ -272,16 +295,77 @@ namespace ComicReader.ViewModels
         }
 
         /// <summary>
-        /// Allows the user to select a custom thumbnail image for a comic book.
+        /// Opens the 2-option Change Thumbnail picker (from inside the comic/chapter or from Explorer/Library).
         /// </summary>
         [RelayCommand]
         private async Task SelectThumbnailAsync(ComicBook? comic)
         {
             if (comic is null) return;
 
+            CancelThumbnailPreviewLoad();
+            ThumbnailTargetComic = comic;
+            ThumbnailPageOptions = new ObservableCollection<ThumbnailPageOption>();
+            IsThumbnailPickerOpen = true;
+            IsLoadingThumbnailPages = true;
+
+            try
+            {
+                IReadOnlyList<ChapterModel> chapters = await _readerFactory.DiscoverChaptersAsync(comic);
+                if (chapters.Count == 0)
+                {
+                    chapters = new[]
+                    {
+                        new ChapterModel
+                        {
+                            ChapterId = comic.Id,
+                            Title = comic.DisplayName,
+                            Format = comic.Format,
+                            SourcePath = comic.FilePath,
+                            PageCount = comic.TotalPages
+                        }
+                    };
+                }
+
+                _isSettingThumbnailChapterProgrammatically = true;
+                try
+                {
+                    ThumbnailChapters = new ObservableCollection<ChapterModel>(chapters);
+                    SelectedThumbnailChapter = ThumbnailChapters[0];
+                }
+                finally
+                {
+                    _isSettingThumbnailChapterProgrammatically = false;
+                }
+
+                await LoadThumbnailChapterPagesAsync(ThumbnailChapters[0]);
+            }
+            catch (Exception ex)
+            {
+                IsLoadingThumbnailPages = false;
+                await ShowNotificationAsync($"Không thể tải danh sách trang: {ex.Message}", isError: true);
+            }
+        }
+
+        partial void OnSelectedThumbnailChapterChanged(ChapterModel? value)
+        {
+            if (_isSettingThumbnailChapterProgrammatically || value is null || !IsThumbnailPickerOpen)
+            {
+                return;
+            }
+
+            _ = LoadThumbnailChapterPagesAsync(value);
+        }
+
+        [RelayCommand]
+        private async Task PickThumbnailFromDeviceAsync()
+        {
+            ComicBook? comic = ThumbnailTargetComic;
+            if (comic is null) return;
+
             string? imagePath = await _fileService.PickImageFileAsync();
             if (string.IsNullOrWhiteSpace(imagePath)) return;
 
+            CloseThumbnailPicker();
             IsBusy = true;
             StatusMessage = $"Updating thumbnail for {comic.DisplayName}...";
 
@@ -291,10 +375,126 @@ namespace ComicReader.ViewModels
                 comic.CoverImagePath = cachedPath;
                 await _storageService.SaveAsync(_libraryStore);
                 StatusMessage = $"Updated thumbnail for {comic.DisplayName}";
+                await ShowNotificationAsync("Đã cập nhật ảnh bìa");
             }
             finally
             {
                 IsBusy = false;
+            }
+        }
+
+        [RelayCommand]
+        private async Task SelectThumbnailPageAsync(ThumbnailPageOption? option)
+        {
+            ComicBook? comic = ThumbnailTargetComic;
+            ChapterModel? chapter = SelectedThumbnailChapter;
+            if (comic is null || option is null) return;
+
+            IsBusy = true;
+            StatusMessage = $"Đang đặt trang {option.PageNumber} làm ảnh bìa...";
+
+            try
+            {
+                Bitmap? coverBitmap = option.Preview;
+                if (coverBitmap is null && chapter is not null)
+                {
+                    IComicReaderService reader = _readerFactory.GetReader(
+                        chapter.Format != ComicFormat.Unknown ? chapter.Format : comic.Format);
+                    using IComicReadSession session = await reader.OpenChapterSessionAsync(
+                        string.IsNullOrWhiteSpace(chapter.SourcePath) ? comic.FilePath : chapter.SourcePath,
+                        chapter);
+                    coverBitmap = await session.RenderPreviewAsync(option.PageNumber - 1, AppConstants.CoverDecodeWidth);
+                }
+
+                if (coverBitmap is not null)
+                {
+                    string cachedPath = await _fileService.SaveCustomThumbnailBitmapAsync(comic.Id, coverBitmap);
+                    comic.CoverImagePath = cachedPath;
+                    await _storageService.SaveAsync(_libraryStore);
+                    StatusMessage = $"Updated thumbnail for {comic.DisplayName}";
+                    CloseThumbnailPicker();
+                    await ShowNotificationAsync($"Đã chọn trang {option.PageNumber} làm ảnh bìa");
+                }
+            }
+            finally
+            {
+                IsBusy = false;
+                if (IsThumbnailPickerOpen)
+                {
+                    CloseThumbnailPicker();
+                }
+            }
+        }
+
+        [RelayCommand]
+        private void CloseThumbnailPicker()
+        {
+            CancelThumbnailPreviewLoad();
+            IsThumbnailPickerOpen = false;
+            IsLoadingThumbnailPages = false;
+            ThumbnailTargetComic = null;
+            ThumbnailPageOptions.Clear();
+            ThumbnailChapters.Clear();
+        }
+
+        private void CancelThumbnailPreviewLoad()
+        {
+            _thumbnailLoadCts?.Cancel();
+            _thumbnailLoadCts?.Dispose();
+            _thumbnailLoadCts = null;
+        }
+
+        private async Task LoadThumbnailChapterPagesAsync(ChapterModel chapter)
+        {
+            ComicBook? comic = ThumbnailTargetComic;
+            if (comic is null) return;
+
+            CancelThumbnailPreviewLoad();
+            var cts = new CancellationTokenSource();
+            _thumbnailLoadCts = cts;
+            CancellationToken token = cts.Token;
+
+            IsLoadingThumbnailPages = true;
+            ThumbnailPageOptions = new ObservableCollection<ThumbnailPageOption>();
+
+            try
+            {
+                IComicReaderService reader = _readerFactory.GetReader(
+                    chapter.Format != ComicFormat.Unknown ? chapter.Format : comic.Format);
+                using IComicReadSession session = await reader.OpenChapterSessionAsync(
+                    string.IsNullOrWhiteSpace(chapter.SourcePath) ? comic.FilePath : chapter.SourcePath,
+                    chapter,
+                    token);
+
+                int maxPreviewCount = Math.Min(session.PageCount, 60);
+                var options = new ObservableCollection<ThumbnailPageOption>();
+                for (int i = 1; i <= maxPreviewCount; i++)
+                {
+                    options.Add(new ThumbnailPageOption { PageNumber = i });
+                }
+                ThumbnailPageOptions = options;
+                IsLoadingThumbnailPages = false;
+
+                for (int i = 0; i < maxPreviewCount; i++)
+                {
+                    if (token.IsCancellationRequested) break;
+                    Bitmap? preview = await session.RenderPreviewAsync(i, AppConstants.CoverDecodeWidth, token);
+                    if (preview is not null && !token.IsCancellationRequested)
+                    {
+                        options[i].Preview = preview;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Replaced by another chapter or closed.
+            }
+            finally
+            {
+                if (!token.IsCancellationRequested)
+                {
+                    IsLoadingThumbnailPages = false;
+                }
             }
         }
 

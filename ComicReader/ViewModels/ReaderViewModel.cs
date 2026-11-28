@@ -9,6 +9,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using ComicReader.Helpers;
 using ComicReader.Models;
+using ComicReader.Reader;
 using ComicReader.Services.Interfaces;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -21,18 +22,16 @@ namespace ComicReader.ViewModels
     /// </summary>
     public partial class ReaderViewModel : ObservableObject
     {
-        private const int FullLoadPageThreshold = 200;
-        private const int LargeBookInitialPreloadCount = 100;
-        // Keep only 3 behind + current + 4 ahead = max 8 decoded Full-Quality RGBA Bitmaps (~150 MB instead of 400-900 MB).
-        private const int PreloadBehindCount = 3;
-        private const int PreloadAheadCount  = 4;
-        // Wider ±8 window keeps raw compressed JPEG/PNG bytes (~0.3-1 MB/page) in RAM for 10-25ms instant Full-Quality decode.
-        private const int CompressedWindowRadius = 8;
+        private const int FullLoadPageThreshold = ViewportManager.FullLoadPageThreshold;
+        private const int LargeBookInitialPreloadCount = ViewportManager.LargeBookInitialPreloadCount;
+        private const int PreloadBehindCount = ViewportManager.PreloadBehindCount;
+        private const int PreloadAheadCount = ViewportManager.PreloadAheadCount;
+        private const int CompressedWindowRadius = ViewportManager.CompressedWindowRadius;
 
         private readonly IComicReaderFactory _readerFactory;
         private readonly IStorageService _storageService;
         private readonly IBookmarkService _bookmarkService;
-        private readonly ImageCacheManager _imageCache = new(keepBehind: PreloadBehindCount, keepAhead: PreloadAheadCount);
+        private readonly ViewportManager _imageCache = new();
         private readonly SemaphoreSlim _preloadConcurrency = new(2, 2);
         private readonly ConcurrentDictionary<int, byte> _inFlightPages = new();
         private readonly ConcurrentDictionary<int, byte> _inFlightPreviews = new();
@@ -331,13 +330,7 @@ namespace ComicReader.ViewModels
             CancelWindowLoading();
             _hasRestoredInitialScroll = false;
 
-            _imageCache.Clear(index =>
-            {
-                if (index >= 0 && index < Pages.Count)
-                {
-                    Pages[index].Image = null;
-                }
-            });
+            _imageCache.Clear(Pages);
             Pages.Clear();
 
             IComicReadSession? previousSession = _readSession;
@@ -376,7 +369,7 @@ namespace ComicReader.ViewModels
             OnPropertyChanged(nameof(HasPreviousChapter));
 
             InitializePagePlaceholders();
-            _imageCache.ConfigureWindow(PreloadBehindCount, PreloadAheadCount);
+            _imageCache.ConfigureDefaultWindow();
 
             Task initialWindowTask = EnsurePageWindowLoadedAsync(CurrentPage - 1, reanchorAfterLoad: true);
 
@@ -911,13 +904,7 @@ namespace ComicReader.ViewModels
 
             TotalPages = 0;
 
-            _imageCache.Clear(index =>
-            {
-                if (index >= 0 && index < Pages.Count)
-                {
-                    Pages[index].Image = null;
-                }
-            });
+            _imageCache.Clear(Pages);
 
             foreach (ComicPageItem page in Pages)
             {
@@ -1005,18 +992,7 @@ namespace ComicReader.ViewModels
 
             // Always enforce Tier 2 decoded RGBA window (max 8 Full-Quality Bitmaps: 3 behind + current + 4 ahead).
             // Evicted full-res pages downgrade seamlessly to their lightweight Preview Bitmap instead of blanking.
-            EvictDistantPages(clampedCenter);
-            if (isLargeBookPast100)
-            {
-                _imageCache.EvictPreviewsOutsideWindow(clampedCenter, 20, 30, (index, fullFallback) =>
-                {
-                    if (index >= 0 && index < Pages.Count && fullFallback is null)
-                    {
-                        Pages[index].Image = null;
-                    }
-                });
-                _imageCache.EvictCompressedOutsideWindow(clampedCenter, CompressedWindowRadius, CompressedWindowRadius);
-            }
+            _imageCache.EvictOutsideWindow(clampedCenter, Pages, trimLargeBookCaches: isLargeBookPast100);
 
             bool centerNeedsFull = !_imageCache.ContainsFull(clampedCenter);
             if (!centerNeedsFull && _imageCache.TryGetFull(clampedCenter, out Bitmap? cachedFull) && cachedFull is not null)
@@ -1220,46 +1196,8 @@ namespace ComicReader.ViewModels
             }
         }
 
-        private void EvictDistantPages(int centerIndex)
-        {
-            _imageCache.EvictOutsideWindow(centerIndex, (index, previewFallback) =>
-            {
-                if (index >= 0 && index < Pages.Count)
-                {
-                    Pages[index].Image = previewFallback;
-                }
-            });
-        }
-
-        private static IEnumerable<int> BuildWindowOrder(int centerIndex, int totalCount, int scrollDirection = 1)
-        {
-            if (scrollDirection >= 0)
-            {
-                for (int offset = 1; offset <= PreloadAheadCount; offset++)
-                {
-                    if (centerIndex + offset < totalCount)
-                        yield return centerIndex + offset;
-                }
-                for (int offset = 1; offset <= PreloadBehindCount; offset++)
-                {
-                    if (centerIndex - offset >= 0)
-                        yield return centerIndex - offset;
-                }
-            }
-            else
-            {
-                for (int offset = 1; offset <= PreloadBehindCount; offset++)
-                {
-                    if (centerIndex - offset >= 0)
-                        yield return centerIndex - offset;
-                }
-                for (int offset = 1; offset <= PreloadAheadCount; offset++)
-                {
-                    if (centerIndex + offset < totalCount)
-                        yield return centerIndex + offset;
-                }
-            }
-        }
+        private static IEnumerable<int> BuildWindowOrder(int centerIndex, int totalCount, int scrollDirection = 1) =>
+            ViewportManager.BuildWindowOrder(centerIndex, totalCount, scrollDirection);
 
         private void StartBulkPreviewPreload(int pageCountToPreload, int priorityCenterIndex, Task? waitForWindowTask = null)
         {

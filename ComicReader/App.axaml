@@ -48,6 +48,7 @@
         <StreamGeometry x:Key="IconCheckCircle">M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm4.28 8.28-5 5a.75.75 0 0 1-1.06 0l-2.5-2.5a.75.75 0 1 1 1.06-1.06l1.97 1.97 4.47-4.47a.75.75 0 1 1 1.06 1.06Z</StreamGeometry>
         <StreamGeometry x:Key="IconMinimize">M4 12h16v1.5H4z</StreamGeometry>
         <StreamGeometry x:Key="IconMaximize">M5 5h14v14H5V5Zm1.5 1.5v11h11v-11h-11Z</StreamGeometry>
+        <StreamGeometry x:Key="IconFullscreen">M4 9.25V5.75C4 4.78 4.78 4 5.75 4h3.5a.75.75 0 0 1 0 1.5h-3.5a.25.25 0 0 0-.25.25v3.5a.75.75 0 0 1-1.5 0Zm16 0a.75.75 0 0 1-1.5 0v-3.5a.25.25 0 0 0-.25-.25h-3.5a.75.75 0 0 1 0-1.5h3.5C19.22 4 20 4.78 20 5.75v3.5ZM9.25 20h-3.5C4.78 20 4 19.22 4 18.25v-3.5a.75.75 0 0 1 1.5 0v3.5c0 .14.11.25.25.25h3.5a.75.75 0 0 1 0 1.5Zm9 0h-3.5a.75.75 0 0 1 0-1.5h3.5a.25.25 0 0 0 .25-.25v-3.5a.75.75 0 0 1 1.5 0v3.5c0 .97-.78 1.75-1.75 1.75Z</StreamGeometry>
         <StreamGeometry x:Key="IconClose">M6.22 6.22a.75.75 0 0 1 1.06 0L12 10.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L13.06 12l4.72 4.72a.75.75 0 1 1-1.06 1.06L12 13.06l-4.72 4.72a.75.75 0 0 1-1.06-1.06L10.94 12 6.22 7.28a.75.75 0 0 1 0-1.06Z</StreamGeometry>
     </Application.Resources>
 

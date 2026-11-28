@@ -7,6 +7,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using ComicReader.Reader;
 using ComicReader.ViewModels;
 
 namespace ComicReader.Views
@@ -42,6 +43,17 @@ namespace ComicReader.Views
         // Reset to false only after the debounce timer fires, ensuring no premature navigation.
         private bool               _isDraggingSlider;
         private ReaderViewModel?   _subscribedViewModel;
+        private WindowState        _windowStateBeforeFullScreen = WindowState.Normal;
+        private Window?            _hostWindow;
+
+        public static readonly StyledProperty<bool> IsFullScreenProperty =
+            AvaloniaProperty.Register<ReaderView, bool>(nameof(IsFullScreen), false);
+
+        public bool IsFullScreen
+        {
+            get => GetValue(IsFullScreenProperty);
+            set => SetValue(IsFullScreenProperty, value);
+        }
 
         // ── styled properties exposed to DataTemplates ─────────────────────────
         /// <summary>Zoom scale for page images, bound via RelativeSource to ScaleTransform.</summary>
@@ -138,10 +150,30 @@ namespace ComicReader.Views
         {
             AttachScrollViewer();
             IsCompactLayout = Bounds.Width > 0 && Bounds.Width < 760;
-            if (TopLevel.GetTopLevel(this)?.InsetsManager is { } insets)
+            TopLevel? topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel?.InsetsManager is { } insets)
             {
                 SafeAreaPadding = insets.SafeAreaPadding;
                 insets.SafeAreaChanged += (_, args) => SafeAreaPadding = args.SafeAreaPadding;
+            }
+
+            if (topLevel is Window window && !ReferenceEquals(_hostWindow, window))
+            {
+                if (_hostWindow is not null)
+                {
+                    _hostWindow.PropertyChanged -= OnHostWindowPropertyChanged;
+                }
+                _hostWindow = window;
+                _hostWindow.PropertyChanged += OnHostWindowPropertyChanged;
+                IsFullScreen = window.WindowState == WindowState.FullScreen;
+            }
+        }
+
+        private void OnHostWindowPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
+        {
+            if (e.Property == Window.WindowStateProperty && _hostWindow is not null)
+            {
+                IsFullScreen = _hostWindow.WindowState == WindowState.FullScreen;
             }
         }
 
@@ -191,6 +223,20 @@ namespace ComicReader.Views
 
         private void OnReaderKeyDown(object? sender, KeyEventArgs e)
         {
+            if (e.Key == Key.F11)
+            {
+                ToggleFullScreen();
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.Escape && IsFullScreen)
+            {
+                ToggleFullScreen();
+                e.Handled = true;
+                return;
+            }
+
             if (_subscribedViewModel is null || _subscribedViewModel.TotalPages <= 0) return;
 
             switch (e.Key)
@@ -218,10 +264,43 @@ namespace ComicReader.Views
 
         private void OnUnloaded(object? sender, RoutedEventArgs e)
         {
+            if (_hostWindow is not null)
+            {
+                _hostWindow.PropertyChanged -= OnHostWindowPropertyChanged;
+                if (_hostWindow.WindowState == WindowState.FullScreen)
+                {
+                    _hostWindow.WindowState = _windowStateBeforeFullScreen == WindowState.FullScreen
+                        ? WindowState.Normal
+                        : _windowStateBeforeFullScreen;
+                }
+                _hostWindow = null;
+            }
+            IsFullScreen = false;
             _sliderDebounceTimer?.Stop();
             _scrollDebounceTimer?.Stop();
             StopAutoScroll();
             DetachScrollViewer();
+        }
+
+        private void OnToggleFullScreenClick(object? sender, RoutedEventArgs e) => ToggleFullScreen();
+
+        private void ToggleFullScreen()
+        {
+            if (TopLevel.GetTopLevel(this) is not Window window) return;
+
+            if (window.WindowState == WindowState.FullScreen)
+            {
+                window.WindowState = _windowStateBeforeFullScreen == WindowState.FullScreen
+                    ? WindowState.Normal
+                    : _windowStateBeforeFullScreen;
+                IsFullScreen = false;
+            }
+            else
+            {
+                _windowStateBeforeFullScreen = window.WindowState;
+                window.WindowState = WindowState.FullScreen;
+                IsFullScreen = true;
+            }
         }
 
         // ── scroll-viewer attachment ───────────────────────────────────────────
@@ -332,36 +411,12 @@ namespace ComicReader.Views
             Point anchor = _pendingZoomAnchor ?? new Point(sv.Viewport.Width * 0.5, sv.Viewport.Height * 0.5);
             _pendingZoomAnchor = null;
 
-            // Find the exact realized page container at `anchor.Y` and record the local ratio inside it.
-            int anchorPageIndex = -1;
-            double ratioInPage = 0.0;
-            double bestDist = double.MaxValue;
-
-            foreach (Control container in PagesListBox.GetRealizedContainers())
-            {
-                if (container.DataContext is not Models.ComicPageItem item) continue;
-                Point? tl = container.TranslatePoint(new Point(0, 0), sv);
-                if (!tl.HasValue) continue;
-
-                double h = container.Bounds.Height;
-                double top = tl.Value.Y;
-                double bottom = top + h;
-                double dist = (anchor.Y >= top && anchor.Y <= bottom)
-                    ? 0.0
-                    : Math.Min(Math.Abs(top - anchor.Y), Math.Abs(bottom - anchor.Y));
-
-                if (anchorPageIndex == -1 || dist < bestDist)
-                {
-                    bestDist = dist;
-                    anchorPageIndex = item.PageNumber - 1;
-                    ratioInPage = h > 0 ? (anchor.Y - top) / h : 0.0;
-                }
-            }
-
-            if (anchorPageIndex < 0 && _subscribedViewModel is not null && _subscribedViewModel.TotalPages > 0)
-            {
-                anchorPageIndex = Math.Clamp(_subscribedViewModel.CurrentPage - 1, 0, _subscribedViewModel.TotalPages - 1);
-            }
+            (int anchorPageIndex, double ratioInPage) = ScrollAnchor.FindZoomAnchor(
+                PagesListBox.GetRealizedContainers(),
+                sv,
+                anchor.Y,
+                _subscribedViewModel?.TotalPages ?? 0,
+                _subscribedViewModel?.CurrentPage ?? 1);
 
             double contentX = (sv.Offset.X + anchor.X) / oldZoom;
 
@@ -654,40 +709,12 @@ namespace ComicReader.Views
             vm.UpdateScrollPosition(page, globalRatio, localRatio);
         }
 
-        private (int Page, double LocalRatio) DetectCurrentPage(ScrollViewer sv)
-        {
-            int    fallback = Math.Max(1, _subscribedViewModel?.CurrentPage ?? 1);
-            int    best     = -1;
-            double bestRatio = 0.0;
-            double bestDist  = double.MaxValue;
-            double viewportCenterY = sv.Viewport.Height * 0.5;
-
-            foreach (Control container in PagesListBox.GetRealizedContainers())
-            {
-                if (container.DataContext is not Models.ComicPageItem item) continue;
-                Point? tl = container.TranslatePoint(new Point(0, 0), sv);
-                if (!tl.HasValue) continue;
-
-                double h      = container.Bounds.Height;
-                double top    = tl.Value.Y;
-                double bottom = top + h;
-                if (bottom < 0 || top > sv.Viewport.Height) continue;
-
-                // Prefer the page containing the viewport center; otherwise closest to center.
-                double dist = (viewportCenterY >= top && viewportCenterY <= bottom)
-                    ? 0.0
-                    : Math.Min(Math.Abs(top - viewportCenterY), Math.Abs(bottom - viewportCenterY));
-
-                if (best == -1 || dist < bestDist)
-                {
-                    best      = item.PageNumber;
-                    bestDist  = dist;
-                    bestRatio = h > 0 ? Math.Clamp(-top / h, 0.0, 1.0) : 0.0;
-                }
-            }
-
-            return best > 0 ? (best, bestRatio) : (fallback, 0.0);
-        }
+        private (int Page, double LocalRatio) DetectCurrentPage(ScrollViewer sv) =>
+            ScrollAnchor.DetectCurrentPage(
+                PagesListBox.GetRealizedContainers(),
+                sv,
+                sv.Viewport.Height,
+                _subscribedViewModel?.CurrentPage ?? 1);
 
         // ── middle-mouse auto-scroll ───────────────────────────────────────────
         private void ToggleAutoScroll(Point origin)

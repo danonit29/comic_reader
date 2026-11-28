@@ -8,6 +8,7 @@
     xmlns:vm="using:ComicReader.ViewModels"
     xmlns:views="using:ComicReader.Views"
     Title="ComicReader"
+    Icon="avares://ComicReader/Assets/logo.png"
     Width="1280"
     Height="800"
     MinWidth="960"
@@ -24,6 +25,7 @@
         <Grid RowDefinitions="Auto,*">
             <!-- Custom Title Bar (Desktop Only) -->
             <Border
+                x:Name="CustomTitleBar"
                 Grid.Row="0"
                 Height="44"
                 Background="{StaticResource ChromeBackgroundBrush}"
@@ -39,17 +41,10 @@
                         VerticalAlignment="Center"
                         Orientation="Horizontal"
                         Spacing="10">
-                        <Border
+                        <Image
                             Width="22"
                             Height="22"
-                            Background="{StaticResource AccentRedBrush}"
-                            CornerRadius="4">
-                            <PathIcon
-                                Width="11"
-                                Height="11"
-                                Data="{StaticResource IconLibrary}"
-                                Foreground="White" />
-                        </Border>
+                            Source="avares://ComicReader/Assets/logo.png" />
                         <TextBlock
                             VerticalAlignment="Center"
                             FontSize="13"

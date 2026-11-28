@@ -518,6 +518,167 @@
             <views:ReaderView DataContext="{CompiledBinding ActiveReader}" />
         </Border>
 
+        <!-- Change Thumbnail 2-Option Modal Overlay -->
+        <Border
+            ZIndex="60"
+            Background="#B8000000"
+            IsVisible="{CompiledBinding IsThumbnailPickerOpen}">
+            <Border
+                Width="680"
+                MaxWidth="740"
+                MaxHeight="580"
+                Margin="24"
+                Padding="20"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Background="#1E1E22"
+                BorderBrush="#33FFFFFF"
+                BorderThickness="1"
+                BoxShadow="0 16 40 0 #B0000000"
+                CornerRadius="12">
+                <Grid RowDefinitions="Auto,Auto,Auto,*">
+                    <!-- Modal Header -->
+                    <Grid Grid.Row="0" Margin="0,0,0,14" ColumnDefinitions="*,Auto">
+                        <StackPanel Grid.Column="0" Spacing="2">
+                            <TextBlock
+                                FontSize="18"
+                                FontWeight="SemiBold"
+                                Foreground="White"
+                                Text="Đổi ảnh bìa (Change Thumbnail)" />
+                            <TextBlock
+                                FontSize="13"
+                                Foreground="#A1A1AA"
+                                Text="{CompiledBinding ThumbnailTargetComic.DisplayName}"
+                                TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                        <Button
+                            Grid.Column="1"
+                            Padding="10,6"
+                            Classes="secondary-btn"
+                            Command="{CompiledBinding CloseThumbnailPickerCommand}"
+                            Content="✕" />
+                    </Grid>
+
+                    <!-- Option 2: Pick from Explorer / Device Gallery -->
+                    <Border
+                        Grid.Row="1"
+                        Margin="0,0,0,14"
+                        Padding="12"
+                        Background="#26262B"
+                        BorderBrush="#26FFFFFF"
+                        BorderThickness="1"
+                        CornerRadius="8">
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                <TextBlock
+                                    FontSize="14"
+                                    FontWeight="SemiBold"
+                                    Foreground="White"
+                                    Text="Chọn ảnh từ thiết bị" />
+                                <TextBlock
+                                    FontSize="12"
+                                    Foreground="#9CA3AF"
+                                    Text="Mở trình chọn file để chọn ảnh bìa tùy ý từ máy." />
+                            </StackPanel>
+                            <Button
+                                Grid.Column="1"
+                                Classes="accent-red"
+                                Command="{CompiledBinding PickThumbnailFromDeviceCommand}">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <PathIcon Width="15" Height="15" Data="{StaticResource IconImageEdit}" Foreground="White" />
+                                    <TextBlock VerticalAlignment="Center" Text="Mở thư viện" />
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+                    </Border>
+
+                    <!-- Option 1 Header + Chapter Selector -->
+                    <Grid Grid.Row="2" Margin="0,0,0,10" ColumnDefinitions="*,Auto">
+                        <TextBlock
+                            Grid.Column="0"
+                            VerticalAlignment="Center"
+                            FontSize="14"
+                            FontWeight="SemiBold"
+                            Foreground="White"
+                            Text="Chọn ảnh từ trong bộ truyện / chương" />
+
+                        <ComboBox
+                            Grid.Column="1"
+                            MaxWidth="260"
+                            Background="#252526"
+                            BorderBrush="#33FFFFFF"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Foreground="White"
+                            IsVisible="{CompiledBinding HasMultipleThumbnailChapters}"
+                            ItemsSource="{CompiledBinding ThumbnailChapters}"
+                            SelectedItem="{CompiledBinding SelectedThumbnailChapter, Mode=TwoWay}">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate x:DataType="models:ChapterModel">
+                                    <TextBlock Text="{CompiledBinding DisplayTitle}" TextTrimming="CharacterEllipsis" />
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                    </Grid>
+
+                    <!-- Option 1: Page Thumbnails Grid -->
+                    <Grid Grid.Row="3">
+                        <ProgressBar
+                            Width="160"
+                            Height="4"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Foreground="{StaticResource AccentRedBrush}"
+                            IsIndeterminate="True"
+                            IsVisible="{CompiledBinding IsLoadingThumbnailPages}" />
+
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <ItemsControl ItemsSource="{CompiledBinding ThumbnailPageOptions}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <helpers:ResponsiveUniformGrid MinItemWidth="115" VerticalAlignment="Top" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="models:ThumbnailPageOption">
+                                        <Button
+                                            Margin="5"
+                                            Padding="6"
+                                            HorizontalAlignment="Stretch"
+                                            Background="#26262B"
+                                            BorderBrush="#26FFFFFF"
+                                            BorderThickness="1"
+                                            CornerRadius="8"
+                                            Cursor="Hand"
+                                            Command="{CompiledBinding ViewModel.SelectThumbnailPageCommand, RelativeSource={RelativeSource AncestorType=views:MainView}}"
+                                            CommandParameter="{CompiledBinding}">
+                                            <StackPanel Spacing="6">
+                                                <Border
+                                                    Height="150"
+                                                    Background="#141414"
+                                                    ClipToBounds="True"
+                                                    CornerRadius="5">
+                                                    <Image
+                                                        Source="{CompiledBinding Preview}"
+                                                        Stretch="UniformToFill" />
+                                                </Border>
+                                                <TextBlock
+                                                    HorizontalAlignment="Center"
+                                                    FontSize="12"
+                                                    FontWeight="Medium"
+                                                    Foreground="#E4E4E7"
+                                                    Text="{CompiledBinding PageLabel}" />
+                                            </StackPanel>
+                                        </Button>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Border>
+
         <!-- Bottom-Right Animated Toast Notification (Transitions: Opacity + TranslateY) -->
         <Border
             Margin="0,0,28,28"

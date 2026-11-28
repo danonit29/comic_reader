@@ -12,6 +12,7 @@ using ComicReader.Helpers;
 using ComicReader.Models;
 using ComicReader.Services;
 using ComicReader.Services.Interfaces;
+using ComicReader.Services.Native;
 using ComicReader.ViewModels;
 using Xunit;
 
@@ -320,6 +321,42 @@ namespace ComicReader.Tests
             Assert.Equal("BoTruyenMoi", folderVm.FolderComics[0].DisplayName);
         }
 
+        [Fact]
+        public void Test8_Layer3_IComicEngine_SafeHandleOpensChapterScopedZipAndFallsBackGracefully()
+        {
+            string zipPath = Path.Combine(_tempRoot, "engine_chapters.zip");
+            using (FileStream fs = File.Create(zipPath))
+            using (var archive = new ZipArchive(fs, ZipArchiveMode.Create))
+            {
+                for (int i = 1; i <= 5; i++)
+                {
+                    ZipArchiveEntry e1 = archive.CreateEntry($"Ch1/{i:D2}.jpg");
+                    using Stream s1 = e1.Open();
+                    s1.Write(new byte[] { 0xFF, 0xD8, (byte)i, 0xD9 });
+                }
+                for (int i = 1; i <= 3; i++)
+                {
+                    ZipArchiveEntry e2 = archive.CreateEntry($"Ch2/{i:D2}.jpg");
+                    using Stream s2 = e2.Open();
+                    s2.Write(new byte[] { 0xFF, 0xD8, (byte)(i + 10), 0xD9 });
+                }
+            }
+
+            List<ChapterModel> chapters = ZipService.DiscoverChapters(zipPath, ComicFormat.Zip);
+            Assert.Equal(2, chapters.Count);
+
+            IComicEngine engine = new RustComicEngine();
+            if (engine.IsAvailable)
+            {
+                using SafeDocumentHandle? handle = engine.OpenZipDocument(zipPath, chapters[1].ZipEntryNames);
+                Assert.NotNull(handle);
+                Assert.Equal(3, engine.GetPageCount(handle!));
+                byte[]? raw = engine.GetPageRawBytes(handle!, 0);
+                Assert.NotNull(raw);
+                Assert.Equal(11, raw![2]);
+            }
+        }
+
         private static void CreateDummyImages(string folderPath, int count)
         {
             Directory.CreateDirectory(folderPath);
@@ -422,6 +459,7 @@ namespace ComicReader.Tests
             }
 
             public Task<string> SaveCoverImageAsync(string comicId, Bitmap coverImage) => Task.FromResult(string.Empty);
+            public Task<string> SaveCustomThumbnailBitmapAsync(string comicId, Bitmap coverImage) => Task.FromResult(string.Empty);
             public Task<string> SaveCustomThumbnailAsync(string comicId, string sourceImagePath) => Task.FromResult(string.Empty);
         }
     }

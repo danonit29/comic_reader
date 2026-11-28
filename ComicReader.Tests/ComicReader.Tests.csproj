@@ -17,4 +17,11 @@
     <ProjectReference Include="..\ComicReader\ComicReader.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="..\native\comic_engine\target\release\comic_engine.dll" Condition="Exists('..\native\comic_engine\target\release\comic_engine.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>comic_engine.dll</Link>
+    </Content>
+  </ItemGroup>
+
 </Project>

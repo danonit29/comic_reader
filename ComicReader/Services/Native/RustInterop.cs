@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using Avalonia;
@@ -9,9 +10,7 @@ using ComicReader.Helpers;
 namespace ComicReader.Services.Native
 {
     /// <summary>
-    /// High-performance C# Interop bridge to the Rust native core (comic_engine.dll).
-    /// Uses .NET 8 [LibraryImport] and direct memory copy into Avalonia WriteableBitmap (Rgba8888).
-    /// Gracefully reports IsAvailable = false when the native library is not present.
+    /// Low-level C# [LibraryImport] P/Invoke bindings to the Rust native core (comic_engine).
     /// </summary>
     internal static partial class RustInterop
     {
@@ -55,7 +54,7 @@ namespace ComicReader.Services.Native
             }
             catch
             {
-                // Native library optional; fall back to managed PdfService / ZipService.
+                // Native library optional; fall back to managed PdfService / ZipService / FolderImageReaderService.
             }
 
             return false;
@@ -64,16 +63,19 @@ namespace ComicReader.Services.Native
         [LibraryImport(LibraryName, StringMarshalling = StringMarshalling.Utf8)]
         internal static partial IntPtr open_document(string pathUtf8);
 
+        [LibraryImport(LibraryName, StringMarshalling = StringMarshalling.Utf8)]
+        internal static partial IntPtr open_document_filtered(string pathUtf8, string entriesUtf8);
+
         [LibraryImport(LibraryName)]
         internal static partial void close_document(IntPtr handle);
 
         [LibraryImport(LibraryName)]
-        internal static partial int get_page_count(IntPtr handle);
+        internal static partial int get_page_count(SafeDocumentHandle handle);
 
         [LibraryImport(LibraryName)]
         [return: MarshalAs(UnmanagedType.I1)]
         internal static partial bool get_page_bitmap(
-            IntPtr handle,
+            SafeDocumentHandle handle,
             int pageIndex,
             uint maxWidth,
             out NativeBitmap outBitmap);
@@ -81,9 +83,17 @@ namespace ComicReader.Services.Native
         [LibraryImport(LibraryName)]
         [return: MarshalAs(UnmanagedType.I1)]
         internal static partial bool get_page_raw_bytes(
-            IntPtr handle,
+            SafeDocumentHandle handle,
             int pageIndex,
             out NativeBuffer outBuf);
+
+        [LibraryImport(LibraryName)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        internal static unsafe partial bool decode_image_bytes(
+            byte* rawPtr,
+            nuint rawLen,
+            uint maxWidth,
+            out NativeBitmap outBitmap);
 
         [LibraryImport(LibraryName)]
         internal static partial void free_raw_bytes(ref NativeBuffer buf);
@@ -91,12 +101,21 @@ namespace ComicReader.Services.Native
         [LibraryImport(LibraryName)]
         internal static partial void free_bitmap(ref NativeBitmap bitmap);
 
-        /// <summary>
-        /// Extracts compressed page bytes (JPEG/PNG/WebP) from the ZIP archive for lightweight RAM caching.
-        /// </summary>
-        public static byte[]? GetPageRawBytes(IntPtr handle, int pageIndex)
+        public static SafeDocumentHandle? OpenZip(string path, IReadOnlyList<string>? allowedEntries = null)
         {
-            if (handle == IntPtr.Zero || pageIndex < 0) return null;
+            if (!IsAvailable) return null;
+
+            IntPtr ptr = allowedEntries is { Count: > 0 }
+                ? open_document_filtered(path, string.Join('\n', allowedEntries))
+                : open_document(path);
+
+            return ptr != IntPtr.Zero ? new SafeDocumentHandle(ptr) : null;
+        }
+
+        public static byte[]? GetPageRawBytes(SafeDocumentHandle handle, int pageIndex)
+        {
+            if (handle.IsInvalid || handle.IsClosed || pageIndex < 0) return null;
+
             NativeBuffer buf = default;
             if (!get_page_raw_bytes(handle, pageIndex, out buf))
             {
@@ -117,67 +136,78 @@ namespace ComicReader.Services.Native
             }
         }
 
-        /// <summary>
-        /// Decodes/renders a page via Rust into RGBA8888 and copies directly into a WriteableBitmap
-        /// without intermediate PNG/JPEG/MemoryStream conversions, freeing Rust memory in finally.
-        /// </summary>
-        public static unsafe Bitmap? RenderPageToBitmap(
-            IntPtr handle,
+        public static Bitmap? RenderPageToBitmap(
+            SafeDocumentHandle handle,
             int pageIndex,
-            int dpi = AppConstants.DefaultRenderDpi,
             uint maxWidth = AppConstants.MaxReaderDecodeWidth)
         {
-            if (handle == IntPtr.Zero || pageIndex < 0) return null;
+            if (handle.IsInvalid || handle.IsClosed || pageIndex < 0) return null;
 
-            NativeBitmap nativeBmp = default;
-            if (!get_page_bitmap(handle, pageIndex, maxWidth, out nativeBmp))
+            if (!get_page_bitmap(handle, pageIndex, maxWidth, out NativeBitmap nativeBmp))
             {
                 return null;
             }
 
-            try
+            using var safeBmp = new SafeBitmapHandle(nativeBmp);
+            return CopyNativeBitmapToAvalonia(safeBmp);
+        }
+
+        public static unsafe Bitmap? DecodeBytesToBitmap(
+            byte[] rawBytes,
+            uint maxWidth = AppConstants.MaxReaderDecodeWidth)
+        {
+            if (!IsAvailable || rawBytes is null || rawBytes.Length == 0) return null;
+
+            fixed (byte* ptr = rawBytes)
             {
-                if (nativeBmp.Data == IntPtr.Zero || nativeBmp.Width == 0 || nativeBmp.Height == 0)
+                if (!decode_image_bytes(ptr, (nuint)rawBytes.Length, maxWidth, out NativeBitmap nativeBmp))
+                {
                     return null;
-
-                int width = (int)nativeBmp.Width;
-                int height = (int)nativeBmp.Height;
-                int srcStride = nativeBmp.Stride > 0 ? (int)nativeBmp.Stride : width * 4;
-
-                var bitmap = new WriteableBitmap(
-                    new PixelSize(width, height),
-                    new Vector(96, 96),
-                    PixelFormat.Rgba8888,
-                    AlphaFormat.Unpremul);
-
-                using ILockedFramebuffer fb = bitmap.Lock();
-                byte* srcBase = (byte*)nativeBmp.Data;
-                byte* dstBase = (byte*)fb.Address;
-
-                if (fb.RowBytes == srcStride)
-                {
-                    long totalBytes = Math.Min((long)nativeBmp.Len, (long)fb.RowBytes * height);
-                    Buffer.MemoryCopy(srcBase, dstBase, (long)fb.RowBytes * height, totalBytes);
-                }
-                else
-                {
-                    int rowCopyBytes = Math.Min(srcStride, fb.RowBytes);
-                    for (int y = 0; y < height; y++)
-                    {
-                        Buffer.MemoryCopy(
-                            srcBase + (long)y * srcStride,
-                            dstBase + (long)y * fb.RowBytes,
-                            fb.RowBytes,
-                            rowCopyBytes);
-                    }
                 }
 
-                return bitmap;
+                using var safeBmp = new SafeBitmapHandle(nativeBmp);
+                return CopyNativeBitmapToAvalonia(safeBmp);
             }
-            finally
+        }
+
+        private static unsafe Bitmap? CopyNativeBitmapToAvalonia(SafeBitmapHandle safeBmp)
+        {
+            if (!safeBmp.IsValid) return null;
+
+            ref readonly NativeBitmap nativeBmp = ref safeBmp.Value;
+            int width = (int)nativeBmp.Width;
+            int height = (int)nativeBmp.Height;
+            int srcStride = nativeBmp.Stride > 0 ? (int)nativeBmp.Stride : width * 4;
+
+            var bitmap = new WriteableBitmap(
+                new PixelSize(width, height),
+                new Vector(96, 96),
+                PixelFormat.Rgba8888,
+                AlphaFormat.Unpremul);
+
+            using ILockedFramebuffer fb = bitmap.Lock();
+            byte* srcBase = (byte*)nativeBmp.Data;
+            byte* dstBase = (byte*)fb.Address;
+
+            if (fb.RowBytes == srcStride)
             {
-                free_bitmap(ref nativeBmp);
+                long totalBytes = Math.Min((long)nativeBmp.Len, (long)fb.RowBytes * height);
+                Buffer.MemoryCopy(srcBase, dstBase, (long)fb.RowBytes * height, totalBytes);
             }
+            else
+            {
+                int rowCopyBytes = Math.Min(srcStride, fb.RowBytes);
+                for (int y = 0; y < height; y++)
+                {
+                    Buffer.MemoryCopy(
+                        srcBase + (long)y * srcStride,
+                        dstBase + (long)y * fb.RowBytes,
+                        fb.RowBytes,
+                        rowCopyBytes);
+                }
+            }
+
+            return bitmap;
         }
     }
 }

@@ -5,6 +5,7 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using ComicReader.Services;
 using ComicReader.Services.Interfaces;
+using ComicReader.Services.Native;
 using ComicReader.ViewModels;
 using ComicReader.Views;
 using Microsoft.Extensions.DependencyInjection;
@@ -49,6 +50,7 @@ namespace ComicReader
 
         private static void ConfigureServices(IServiceCollection services)
         {
+            services.AddSingleton<IComicEngine, RustComicEngine>();
             services.AddSingleton(_ => new PdfService(NativePdfRendererFactory?.Invoke()));
             services.AddSingleton<ZipService>();
             services.AddSingleton<FolderImageReaderService>();

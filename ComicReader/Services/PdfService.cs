@@ -41,7 +41,8 @@ namespace ComicReader.Services
             var chapters = new List<ChapterModel>();
             if (!File.Exists(filePath)) return chapters;
 
-            using PdfDocument doc = PdfDocument.Open(filePath);
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 65536);
+            using PdfDocument doc = PdfDocument.Open(stream);
             int totalPages = doc.NumberOfPages;
             if (totalPages <= 0) return chapters;
 
@@ -193,7 +194,8 @@ namespace ComicReader.Services
             return Task.Run(() =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                using PdfDocument doc = PdfDocument.Open(filePath);
+                using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 65536);
+                using PdfDocument doc = PdfDocument.Open(stream);
                 return doc.NumberOfPages;
             }, cancellationToken);
         }
@@ -288,6 +290,7 @@ namespace ComicReader.Services
         {
             private readonly string _filePath;
             private readonly INativePdfRenderer? _nativeRenderer;
+            private readonly FileStream _pdfStream;
             private readonly PdfDocument _pdfDoc;
             private readonly object _pdfPigLock = new();
             private readonly SemaphoreSlim _nativeOpenLock = new(1, 1);
@@ -298,7 +301,8 @@ namespace ComicReader.Services
             {
                 _filePath = filePath;
                 _nativeRenderer = nativeRenderer;
-                _pdfDoc = PdfDocument.Open(filePath);
+                _pdfStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 65536);
+                _pdfDoc = PdfDocument.Open(_pdfStream);
                 PageCount = _pdfDoc.NumberOfPages;
             }
 
@@ -391,6 +395,7 @@ namespace ComicReader.Services
                     if (_disposed) return;
                     _disposed = true;
                     _pdfDoc.Dispose();
+                    _pdfStream.Dispose();
                 }
 
                 _nativeSession?.Dispose();

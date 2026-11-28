@@ -21,6 +21,7 @@ namespace ComicReader.Views
         private readonly MainViewModel? _viewModel;
         private readonly ISettingsService? _settingsService;
         private AppSettings _appSettings = new();
+        private WindowState _windowStateBeforeFullScreen = WindowState.Normal;
 
         /// <summary>
         /// Strongly-typed ViewModel accessor.
@@ -42,6 +43,42 @@ namespace ComicReader.Views
             _viewModel.RequestRenamePrompt = ShowRenameDialogAsync;
             Opened += OnOpened;
             Closing += OnClosing;
+            PropertyChanged += OnWindowPropertyChanged;
+            AddHandler(KeyDownEvent, OnWindowKeyDown, RoutingStrategies.Tunnel);
+        }
+
+        private void OnWindowKeyDown(object? sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.F11)
+            {
+                if (WindowState == WindowState.FullScreen)
+                {
+                    WindowState = _windowStateBeforeFullScreen == WindowState.FullScreen
+                        ? WindowState.Normal
+                        : _windowStateBeforeFullScreen;
+                }
+                else
+                {
+                    _windowStateBeforeFullScreen = WindowState;
+                    WindowState = WindowState.FullScreen;
+                }
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Escape && WindowState == WindowState.FullScreen)
+            {
+                WindowState = _windowStateBeforeFullScreen == WindowState.FullScreen
+                    ? WindowState.Normal
+                    : _windowStateBeforeFullScreen;
+                e.Handled = true;
+            }
+        }
+
+        private void OnWindowPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
+        {
+            if (e.Property == WindowStateProperty)
+            {
+                CustomTitleBar.IsVisible = WindowState != WindowState.FullScreen;
+            }
         }
 
         private async void OnOpened(object? sender, EventArgs e)
@@ -51,7 +88,9 @@ namespace ComicReader.Views
             _appSettings = await _settingsService.LoadAsync();
             if (_appSettings.WindowWidth >= MinWidth) Width = _appSettings.WindowWidth;
             if (_appSettings.WindowHeight >= MinHeight) Height = _appSettings.WindowHeight;
-            WindowState = _appSettings.WindowState;
+            WindowState = _appSettings.WindowState == WindowState.FullScreen
+                ? WindowState.Normal
+                : _appSettings.WindowState;
 
             await _viewModel.InitializeAsync();
         }
@@ -60,7 +99,9 @@ namespace ComicReader.Views
         {
             if (_settingsService is null) return;
 
-            _appSettings.WindowState = WindowState;
+            _appSettings.WindowState = WindowState == WindowState.FullScreen
+                ? (_windowStateBeforeFullScreen == WindowState.FullScreen ? WindowState.Normal : _windowStateBeforeFullScreen)
+                : WindowState;
             if (WindowState == WindowState.Normal)
             {
                 _appSettings.WindowWidth = Bounds.Width > 0 ? Bounds.Width : Width;

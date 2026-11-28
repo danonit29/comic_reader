@@ -29,6 +29,15 @@ echo [1/4] Dang don dep thu muc build...
 if exist "%ARTIFACTS_DIR%\win-x64" rd /s /q "%ARTIFACTS_DIR%\win-x64"
 mkdir "%ARTIFACTS_DIR%\win-x64"
 
+where cargo >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    echo [1b] Dang build Rust Native Engine (comic_engine.dll)...
+    cargo build --manifest-path "%SCRIPT_ROOT%native\comic_engine\Cargo.toml" --release
+    if exist "%SCRIPT_ROOT%native\comic_engine\target\release\comic_engine.dll" (
+        copy /y "%SCRIPT_ROOT%native\comic_engine\target\release\comic_engine.dll" "%PUBLISH_DIR%\comic_engine.dll" > nul
+    )
+)
+
 echo.
 echo [2/4] Dang build Windows x64 Single-file Standalone EXE...
 dotnet publish "%SCRIPT_ROOT%ComicReader.Desktop\ComicReader.Desktop.csproj" -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o "%ARTIFACTS_DIR%\win-x64"

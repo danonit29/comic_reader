@@ -19,6 +19,12 @@ namespace ComicReader.Services
     public sealed class ZipService : IComicReaderService
     {
         private static readonly NaturalStringComparer NaturalComparer = new();
+        private readonly IComicEngine _engine;
+
+        public ZipService(IComicEngine? engine = null)
+        {
+            _engine = engine ?? new RustComicEngine();
+        }
 
         /// <summary>
         /// Inspects a ZIP/CBZ archive and splits it into chapters by internal subfolder structure
@@ -99,7 +105,7 @@ namespace ComicReader.Services
             return Task.Run<IComicReadSession>(() =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                return new ZipReadSession(filePath, allowedEntryNames: null);
+                return new ZipReadSession(filePath, allowedEntryNames: null, _engine);
             }, cancellationToken);
         }
 
@@ -115,7 +121,7 @@ namespace ComicReader.Services
                 IReadOnlyList<string>? filter = chapter.ZipEntryNames.Count > 0
                     ? chapter.ZipEntryNames
                     : null;
-                return new ZipReadSession(sourcePath, filter);
+                return new ZipReadSession(sourcePath, filter, _engine);
             }, cancellationToken);
         }
 
@@ -226,22 +232,28 @@ namespace ComicReader.Services
 
         private sealed class ZipReadSession : IComicReadSession
         {
+            private readonly IComicEngine _engine;
             private readonly ZipArchive? _archive;
             private readonly List<ZipArchiveEntry>? _entries;
             private readonly object _archiveLock = new();
-            private IntPtr _nativeSession;
+            private SafeDocumentHandle? _nativeHandle;
             private bool _disposed;
 
-            public ZipReadSession(string filePath, IReadOnlyList<string>? allowedEntryNames)
+            public ZipReadSession(string filePath, IReadOnlyList<string>? allowedEntryNames, IComicEngine engine)
             {
-                if (allowedEntryNames is null && RustInterop.IsAvailable)
+                _engine = engine;
+
+                if (_engine.IsAvailable)
                 {
-                    _nativeSession = RustInterop.open_document(filePath);
-                    if (_nativeSession != IntPtr.Zero)
+                    _nativeHandle = _engine.OpenZipDocument(filePath, allowedEntryNames);
+                    if (_nativeHandle is not null && !_nativeHandle.IsInvalid)
                     {
-                        PageCount = RustInterop.get_page_count(_nativeSession);
+                        PageCount = _engine.GetPageCount(_nativeHandle);
                         return;
                     }
+
+                    _nativeHandle?.Dispose();
+                    _nativeHandle = null;
                 }
 
                 _archive = ZipFile.OpenRead(filePath);
@@ -269,9 +281,9 @@ namespace ComicReader.Services
                     cancellationToken.ThrowIfCancellationRequested();
                     if (_disposed) return null;
 
-                    if (_nativeSession != IntPtr.Zero)
+                    if (_nativeHandle is { IsInvalid: false, IsClosed: false })
                     {
-                        return RustInterop.GetPageRawBytes(_nativeSession, pageIndex);
+                        return _engine.GetPageRawBytes(_nativeHandle, pageIndex);
                     }
 
                     if (_entries is null || pageIndex < 0 || pageIndex >= _entries.Count) return null;
@@ -288,6 +300,11 @@ namespace ComicReader.Services
                 return Task.Run<Bitmap?>(() =>
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    if (_engine.IsAvailable)
+                    {
+                        Bitmap? nativeBmp = _engine.DecodeImageBytes(rawBytes, AppConstants.MaxReaderDecodeWidth);
+                        if (nativeBmp is not null) return nativeBmp;
+                    }
                     return ImageHelper.DecodeFromBytes(rawBytes, null);
                 }, cancellationToken);
             }
@@ -314,10 +331,10 @@ namespace ComicReader.Services
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    if (_nativeSession != IntPtr.Zero)
+                    if (_nativeHandle is { IsInvalid: false, IsClosed: false })
                     {
                         if (_disposed) return null;
-                        return RustInterop.RenderPageToBitmap(_nativeSession, pageIndex, dpi, (uint)maxWidth);
+                        return _engine.RenderPageToBitmap(_nativeHandle, pageIndex, (uint)maxWidth);
                     }
 
                     if (_entries is null || pageIndex < 0 || pageIndex >= _entries.Count) return null;
@@ -342,11 +359,8 @@ namespace ComicReader.Services
                     if (_disposed) return;
                     _disposed = true;
 
-                    if (_nativeSession != IntPtr.Zero)
-                    {
-                        RustInterop.close_document(_nativeSession);
-                        _nativeSession = IntPtr.Zero;
-                    }
+                    _nativeHandle?.Dispose();
+                    _nativeHandle = null;
 
                     _archive?.Dispose();
                 }

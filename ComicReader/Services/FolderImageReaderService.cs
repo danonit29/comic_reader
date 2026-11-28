@@ -7,14 +7,23 @@ using Avalonia.Media.Imaging;
 using ComicReader.Helpers;
 using ComicReader.Models;
 using ComicReader.Services.Interfaces;
+using ComicReader.Services.Native;
 
 namespace ComicReader.Services
 {
     /// <summary>
-    /// Reads comic pages directly from a folder chapter's image files on disk.
+    /// Reads comic pages directly from a folder chapter's image files on disk,
+    /// using <see cref="IComicEngine"/> for native decode when available.
     /// </summary>
     public sealed class FolderImageReaderService : IComicReaderService
     {
+        private readonly IComicEngine _engine;
+
+        public FolderImageReaderService(IComicEngine? engine = null)
+        {
+            _engine = engine ?? new RustComicEngine();
+        }
+
         /// <inheritdoc />
         public Task<IComicReadSession> OpenSessionAsync(string filePath, CancellationToken cancellationToken = default)
         {
@@ -25,7 +34,7 @@ namespace ComicReader.Services
                 IReadOnlyList<string> images = chapters.Count > 0
                     ? chapters[0].ImagePaths
                     : Array.Empty<string>();
-                return new FolderChapterReadSession(images);
+                return new FolderChapterReadSession(images, _engine);
             }, cancellationToken);
         }
 
@@ -41,7 +50,7 @@ namespace ComicReader.Services
                 IReadOnlyList<string> images = chapter.ImagePaths.Count > 0
                     ? chapter.ImagePaths
                     : Array.Empty<string>();
-                return new FolderChapterReadSession(images);
+                return new FolderChapterReadSession(images, _engine);
             }, cancellationToken);
         }
 
@@ -104,11 +113,13 @@ namespace ComicReader.Services
         private sealed class FolderChapterReadSession : IComicReadSession
         {
             private readonly IReadOnlyList<string> _imagePaths;
+            private readonly IComicEngine _engine;
             private volatile bool _disposed;
 
-            public FolderChapterReadSession(IReadOnlyList<string> imagePaths)
+            public FolderChapterReadSession(IReadOnlyList<string> imagePaths, IComicEngine engine)
             {
                 _imagePaths = imagePaths;
+                _engine = engine;
                 PageCount = imagePaths.Count;
             }
 
@@ -130,6 +141,11 @@ namespace ComicReader.Services
                 return Task.Run<Bitmap?>(() =>
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    if (_engine.IsAvailable)
+                    {
+                        Bitmap? nativeBmp = _engine.DecodeImageBytes(rawBytes, AppConstants.MaxReaderDecodeWidth);
+                        if (nativeBmp is not null) return nativeBmp;
+                    }
                     return ImageHelper.DecodeFromBytes(rawBytes, null);
                 }, cancellationToken);
             }
@@ -157,6 +173,12 @@ namespace ComicReader.Services
                     if (!File.Exists(path)) return null;
 
                     byte[] bytes = File.ReadAllBytes(path);
+                    if (_engine.IsAvailable)
+                    {
+                        Bitmap? nativeBmp = _engine.DecodeImageBytes(bytes, maxWidth > 0 ? (uint)maxWidth : 0u);
+                        if (nativeBmp is not null) return nativeBmp;
+                    }
+
                     return maxWidth > 0
                         ? ImageHelper.DecodeFromBytes(bytes, maxWidth)
                         : ImageHelper.DecodeFromBytes(bytes, null);
