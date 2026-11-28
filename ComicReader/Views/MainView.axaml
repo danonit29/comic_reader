@@ -56,6 +56,7 @@
                                     HorizontalAlignment="Right"
                                     VerticalAlignment="Top"
                                     Classes="card-overlay-actions"
+                                    Classes.always-visible="{CompiledBinding IsAndroidPlatform, RelativeSource={RelativeSource AncestorType=views:MainView}}"
                                     Orientation="Horizontal"
                                     Spacing="6">
                                     <Button
@@ -136,6 +137,7 @@
                         HorizontalAlignment="Right"
                         VerticalAlignment="Top"
                         Classes="card-overlay-btn folder-overlay-btn"
+                        Classes.always-visible="{CompiledBinding IsAndroidPlatform, RelativeSource={RelativeSource AncestorType=views:MainView}}"
                         Command="{CompiledBinding ViewModel.FolderVm.RenameFolderCommand, RelativeSource={RelativeSource AncestorType=views:MainView}}"
                         CommandParameter="{CompiledBinding}"
                         ToolTip.Tip="Rename Folder">
@@ -524,12 +526,11 @@
             Background="#B8000000"
             IsVisible="{CompiledBinding IsThumbnailPickerOpen}">
             <Border
-                Width="680"
-                MaxWidth="740"
-                MaxHeight="580"
-                Margin="24"
-                Padding="20"
-                HorizontalAlignment="Center"
+                HorizontalAlignment="Stretch"
+                MaxWidth="680"
+                MaxHeight="620"
+                Margin="14"
+                Padding="16"
                 VerticalAlignment="Center"
                 Background="#1E1E22"
                 BorderBrush="#33FFFFFF"
@@ -538,15 +539,16 @@
                 CornerRadius="12">
                 <Grid RowDefinitions="Auto,Auto,Auto,*">
                     <!-- Modal Header -->
-                    <Grid Grid.Row="0" Margin="0,0,0,14" ColumnDefinitions="*,Auto">
-                        <StackPanel Grid.Column="0" Spacing="2">
+                    <Grid Grid.Row="0" Margin="0,0,0,12" ColumnDefinitions="*,Auto">
+                        <StackPanel Grid.Column="0" Margin="0,0,8,0" Spacing="2">
                             <TextBlock
-                                FontSize="18"
+                                FontSize="17"
                                 FontWeight="SemiBold"
                                 Foreground="White"
-                                Text="Đổi ảnh bìa (Change Thumbnail)" />
+                                Text="Đổi ảnh bìa (Change Thumbnail)"
+                                TextTrimming="CharacterEllipsis" />
                             <TextBlock
-                                FontSize="13"
+                                FontSize="12.5"
                                 Foreground="#A1A1AA"
                                 Text="{CompiledBinding ThumbnailTargetComic.DisplayName}"
                                 TextTrimming="CharacterEllipsis" />
@@ -562,26 +564,30 @@
                     <!-- Option 2: Pick from Explorer / Device Gallery -->
                     <Border
                         Grid.Row="1"
-                        Margin="0,0,0,14"
+                        Margin="0,0,0,12"
                         Padding="12"
                         Background="#26262B"
                         BorderBrush="#26FFFFFF"
                         BorderThickness="1"
                         CornerRadius="8">
                         <Grid ColumnDefinitions="*,Auto">
-                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                            <StackPanel Grid.Column="0" Margin="0,0,10,0" VerticalAlignment="Center" Spacing="2">
                                 <TextBlock
                                     FontSize="14"
                                     FontWeight="SemiBold"
                                     Foreground="White"
-                                    Text="Chọn ảnh từ thiết bị" />
+                                    Text="Chọn ảnh từ thiết bị"
+                                    TextTrimming="CharacterEllipsis" />
                                 <TextBlock
                                     FontSize="12"
                                     Foreground="#9CA3AF"
-                                    Text="Mở trình chọn file để chọn ảnh bìa tùy ý từ máy." />
+                                    Text="Mở trình chọn file để chọn ảnh bìa từ máy."
+                                    TextWrapping="Wrap" />
                             </StackPanel>
                             <Button
                                 Grid.Column="1"
+                                Padding="10,8"
+                                VerticalAlignment="Center"
                                 Classes="accent-red"
                                 Command="{CompiledBinding PickThumbnailFromDeviceCommand}">
                                 <StackPanel Orientation="Horizontal" Spacing="6">
@@ -596,15 +602,17 @@
                     <Grid Grid.Row="2" Margin="0,0,0,10" ColumnDefinitions="*,Auto">
                         <TextBlock
                             Grid.Column="0"
+                            Margin="0,0,8,0"
                             VerticalAlignment="Center"
-                            FontSize="14"
+                            FontSize="13.5"
                             FontWeight="SemiBold"
                             Foreground="White"
-                            Text="Chọn ảnh từ trong bộ truyện / chương" />
+                            Text="Chọn ảnh từ bộ truyện"
+                            TextTrimming="CharacterEllipsis" />
 
                         <ComboBox
                             Grid.Column="1"
-                            MaxWidth="260"
+                            MaxWidth="160"
                             Background="#252526"
                             BorderBrush="#33FFFFFF"
                             BorderThickness="1"
@@ -615,7 +623,7 @@
                             SelectedItem="{CompiledBinding SelectedThumbnailChapter, Mode=TwoWay}">
                             <ComboBox.ItemTemplate>
                                 <DataTemplate x:DataType="models:ChapterModel">
-                                    <TextBlock Text="{CompiledBinding DisplayTitle}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{CompiledBinding ShortTitle}" TextTrimming="CharacterEllipsis" />
                                 </DataTemplate>
                             </ComboBox.ItemTemplate>
                         </ComboBox>
@@ -636,7 +644,7 @@
                             <ItemsControl ItemsSource="{CompiledBinding ThumbnailPageOptions}">
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
-                                        <helpers:ResponsiveUniformGrid MinItemWidth="115" VerticalAlignment="Top" />
+                                        <helpers:ResponsiveUniformGrid MinItemWidth="95" VerticalAlignment="Top" />
                                     </ItemsPanelTemplate>
                                 </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
@@ -676,6 +684,58 @@
                         </ScrollViewer>
                     </Grid>
                 </Grid>
+            </Border>
+        </Border>
+
+        <!-- Inline Rename Modal Overlay (used on Android / SingleView lifetime) -->
+        <Border
+            x:Name="RenameModalOverlay"
+            ZIndex="70"
+            Background="#B8000000"
+            IsVisible="False">
+            <Border
+                Margin="16"
+                Padding="18"
+                HorizontalAlignment="Stretch"
+                MaxWidth="400"
+                VerticalAlignment="Center"
+                Background="#1E1E22"
+                BorderBrush="#33FFFFFF"
+                BorderThickness="1"
+                BoxShadow="0 16 40 0 #B0000000"
+                CornerRadius="12">
+                <StackPanel Spacing="14">
+                    <TextBlock
+                        FontSize="17"
+                        FontWeight="SemiBold"
+                        Foreground="White"
+                        Text="Đổi tên (Rename)" />
+
+                    <TextBox
+                        x:Name="RenameInputTextBox"
+                        Padding="10,8"
+                        Background="#252528"
+                        BorderBrush="#3F3F46"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        FontSize="14"
+                        Foreground="White"
+                        KeyDown="OnRenameInputKeyDown"
+                        Watermark="Nhập tên mới..." />
+
+                    <StackPanel HorizontalAlignment="Right" Orientation="Horizontal" Spacing="10">
+                        <Button
+                            Padding="16,8"
+                            Classes="secondary-btn"
+                            Click="OnRenameCancelClick"
+                            Content="Hủy" />
+                        <Button
+                            Padding="18,8"
+                            Classes="accent-red"
+                            Click="OnRenameConfirmClick"
+                            Content="Lưu" />
+                    </StackPanel>
+                </StackPanel>
             </Border>
         </Border>
 

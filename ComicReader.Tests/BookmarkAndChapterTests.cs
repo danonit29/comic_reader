@@ -357,6 +357,139 @@ namespace ComicReader.Tests
             }
         }
 
+        [Fact]
+        public async Task Test9_ReaderViewModel_BookmarksSortedDescending_SingleComicShowsPageOnly_AndToggleToolbars()
+        {
+            // 1. Multi-chapter comic: verify descending order (Chapter desc -> Page desc) and DisplayLabel
+            string multiRoot = Path.Combine(_tempRoot, "MultiSorted");
+            CreateDummyImages(Path.Combine(multiRoot, "Chuong 1"), 10);
+            CreateDummyImages(Path.Combine(multiRoot, "Chuong 2"), 15);
+            CreateDummyImages(Path.Combine(multiRoot, "Chuong 10"), 20);
+
+            var bmService = new BookmarkService(Path.Combine(_tempRoot, "bm_sorted.json"));
+            var storage = new InMemoryStorageService();
+            var factory = new ComicReaderFactory(new PdfService(), new ZipService(), new FolderImageReaderService());
+            var vm = new ReaderViewModel(factory, storage, bmService);
+
+            var multiComic = new ComicBook
+            {
+                Id = "multi-sorted-1",
+                DisplayName = "MultiSorted",
+                FilePath = multiRoot,
+                Format = ComicFormat.Folder
+            };
+
+            await vm.LoadComicAsync(multiComic);
+            Assert.Equal(3, vm.Chapters.Count);
+            Assert.True(vm.AreToolbarsVisible);
+
+            // Toggle toolbars off -> hides bookmark panel too; toggle again -> shows toolbars
+            vm.IsBookmarkPanelOpen = true;
+            vm.ToggleToolbarsCommand.Execute(null);
+            Assert.False(vm.AreToolbarsVisible);
+            Assert.False(vm.IsBookmarkPanelOpen);
+            vm.ToggleToolbarsCommand.Execute(null);
+            Assert.True(vm.AreToolbarsVisible);
+
+            // Add bookmarks out of order: Chap 1 p3, Chap 10 p5 & p18, Chap 2 p4 & p12
+            vm.JumpToPage(3);
+            await vm.AddBookmarkCommand.ExecuteAsync(null); // Chuong 1, p3
+
+            await vm.NextChapterCommand.ExecuteAsync(null); // Chuong 2
+            await vm.NextChapterCommand.ExecuteAsync(null); // Chuong 10
+            vm.JumpToPage(5);
+            await vm.AddBookmarkCommand.ExecuteAsync(null); // Chuong 10, p5
+            vm.JumpToPage(18);
+            await vm.AddBookmarkCommand.ExecuteAsync(null); // Chuong 10, p18
+
+            await vm.PreviousChapterCommand.ExecuteAsync(null); // Chuong 2
+            vm.JumpToPage(4);
+            await vm.AddBookmarkCommand.ExecuteAsync(null); // Chuong 2, p4
+            vm.JumpToPage(12);
+            await vm.AddBookmarkCommand.ExecuteAsync(null); // Chuong 2, p12
+
+            Assert.Equal(5, vm.Bookmarks.Count);
+            Assert.Equal(new[]
+            {
+                "Chương 10 • Trang 18",
+                "Chương 10 • Trang 5",
+                "Chương 2 • Trang 12",
+                "Chương 2 • Trang 4",
+                "Chương 1 • Trang 3"
+            }, vm.Bookmarks.Select(b => b.DisplayLabel).ToArray());
+
+            vm.Cleanup();
+
+            // 1B. Multi-chapter ZIP with verbose folder names (e.g. NetTruyen): verify ShortTitle, Bookmark DisplayLabel, and sorting
+            string zipVerbosePath = Path.Combine(_tempRoot, "VoLuyenDinhPhong.zip");
+            using (FileStream fs = File.Create(zipVerbosePath))
+            using (var archive = new ZipArchive(fs, ZipArchiveMode.Create))
+            {
+                for (int i = 1; i <= 5; i++)
+                {
+                    ZipArchiveEntry e1 = archive.CreateEntry($"Vo Luyen/Võ Luyện Đỉnh Phong Chap 1 Next Chap 2 - NetTruyen/{i:D2}.jpg");
+                    using Stream s1 = e1.Open();
+                    s1.Write(new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 });
+                }
+                for (int i = 1; i <= 8; i++)
+                {
+                    ZipArchiveEntry e10 = archive.CreateEntry($"Vo Luyen/Võ Luyện Đỉnh Phong Chap 10 Next Chap 11 - NetTruyen/{i:D2}.jpg");
+                    using Stream s10 = e10.Open();
+                    s10.Write(new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 });
+                }
+            }
+
+            var zipComic = new ComicBook
+            {
+                Id = "zip-verbose-1",
+                DisplayName = "VoLuyenDinhPhong",
+                FilePath = zipVerbosePath,
+                Format = ComicFormat.Zip
+            };
+
+            var vmZip = new ReaderViewModel(factory, storage, bmService);
+            await vmZip.LoadComicAsync(zipComic);
+            Assert.Equal(new[] { "Chương 1", "Chương 10" }, vmZip.Chapters.Select(c => c.ShortTitle).ToArray());
+
+            vmZip.JumpToPage(2);
+            await vmZip.AddBookmarkCommand.ExecuteAsync(null);
+            await vmZip.NextChapterCommand.ExecuteAsync(null); // Chap 10
+            vmZip.JumpToPage(6);
+            await vmZip.AddBookmarkCommand.ExecuteAsync(null);
+
+            Assert.Equal(new[] { "Chương 10 • Trang 6", "Chương 1 • Trang 2" },
+                vmZip.Bookmarks.Select(b => b.DisplayLabel).ToArray());
+
+            vmZip.Cleanup();
+
+            // 2. Single comic ("bộ lẻ"): verify DisplayLabel shows ONLY "Trang X" and sorted descending by page
+            string singleRoot = Path.Combine(_tempRoot, "SingleComic");
+            CreateDummyImages(singleRoot, 30);
+            var singleComic = new ComicBook
+            {
+                Id = "single-1",
+                DisplayName = "BoLeTest",
+                FilePath = singleRoot,
+                Format = ComicFormat.Folder
+            };
+
+            var vmSingle = new ReaderViewModel(factory, storage, bmService);
+            await vmSingle.LoadComicAsync(singleComic);
+            Assert.False(vmSingle.HasMultipleChapters);
+
+            vmSingle.JumpToPage(2);
+            await vmSingle.AddBookmarkCommand.ExecuteAsync(null);
+            vmSingle.JumpToPage(25);
+            await vmSingle.AddBookmarkCommand.ExecuteAsync(null);
+            vmSingle.JumpToPage(9);
+            await vmSingle.AddBookmarkCommand.ExecuteAsync(null);
+
+            Assert.Equal(new[] { "Trang 25", "Trang 9", "Trang 2" },
+                vmSingle.Bookmarks.Select(b => b.DisplayLabel).ToArray());
+
+            vmSingle.Cleanup();
+        }
+
         private static void CreateDummyImages(string folderPath, int count)
         {
             Directory.CreateDirectory(folderPath);

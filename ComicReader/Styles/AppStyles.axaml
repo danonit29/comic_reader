@@ -164,6 +164,9 @@
         <Setter Property="BorderBrush" Value="#C42B1C" />
         <Setter Property="BoxShadow" Value="0 8 24 0 #66000000" />
     </Style>
+    <Style Selector="Border.comic-card:pressed">
+        <Setter Property="RenderTransform" Value="scale(0.97, 0.97)" />
+    </Style>
 
     <!-- Hover-Reveal Overlay Action Container on Comic Cards -->
     <Style Selector="StackPanel.card-overlay-actions">
@@ -176,7 +179,8 @@
             </Transitions>
         </Setter>
     </Style>
-    <Style Selector="Border.comic-card:pointerover StackPanel.card-overlay-actions">
+    <Style Selector="Border.comic-card:pointerover StackPanel.card-overlay-actions,
+                     StackPanel.card-overlay-actions.always-visible">
         <Setter Property="Opacity" Value="1" />
         <Setter Property="RenderTransform" Value="translateY(0px)" />
     </Style>
@@ -207,7 +211,8 @@
             </Transitions>
         </Setter>
     </Style>
-    <Style Selector="Border.comic-card:pointerover Button.folder-overlay-btn">
+    <Style Selector="Border.comic-card:pointerover Button.folder-overlay-btn,
+                     Button.folder-overlay-btn.always-visible">
         <Setter Property="Opacity" Value="1" />
     </Style>
 
@@ -239,17 +244,20 @@
         <Setter Property="Foreground" Value="#C42B1C" />
     </Style>
 
-    <!-- Reader Overlay Smooth Fade-In -->
+    <!-- Reader Overlay Smooth Fade-In + Subtle Scale -->
     <Style Selector="Border.reader-overlay">
         <Setter Property="Opacity" Value="0" />
+        <Setter Property="RenderTransform" Value="scale(0.97, 0.97)" />
         <Setter Property="Transitions">
             <Transitions>
                 <DoubleTransition Property="Opacity" Duration="0:0:0.22" Easing="CubicEaseOut" />
+                <TransformOperationsTransition Property="RenderTransform" Duration="0:0:0.22" Easing="CubicEaseOut" />
             </Transitions>
         </Setter>
     </Style>
     <Style Selector="Border.reader-overlay.open">
         <Setter Property="Opacity" Value="1" />
+        <Setter Property="RenderTransform" Value="scale(1, 1)" />
     </Style>
 
     <!-- Reader Bookmark Toast -->

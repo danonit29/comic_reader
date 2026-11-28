@@ -22,3 +22,5 @@ $RECYCLE.BIN/
 # Native Crash & Temp
 .tmp/
 *.log
+target/
+native/**/target/

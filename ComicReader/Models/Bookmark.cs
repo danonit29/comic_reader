@@ -1,5 +1,6 @@
 using System;
 using System.Text.Json.Serialization;
+using ComicReader.Helpers;
 
 namespace ComicReader.Models
 {
@@ -74,8 +75,20 @@ namespace ComicReader.Models
         /// Formatted display text for the reader bookmark list.
         /// </summary>
         [JsonIgnore]
-        public string DisplayLabel => string.IsNullOrWhiteSpace(ChapterTitle)
-            ? $"Trang {PageNumber}"
-            : $"{ChapterTitle} • Trang {PageNumber}";
+        public string DisplayLabel
+        {
+            get
+            {
+                if (string.IsNullOrWhiteSpace(ChapterTitle))
+                {
+                    return $"Trang {PageNumber}";
+                }
+
+                string shortChapter = ChapterTitleHelper.FormatShortChapterTitle(ChapterTitle);
+                return string.IsNullOrWhiteSpace(shortChapter)
+                    ? $"Trang {PageNumber}"
+                    : $"{shortChapter} • Trang {PageNumber}";
+            }
+        }
     }
 }

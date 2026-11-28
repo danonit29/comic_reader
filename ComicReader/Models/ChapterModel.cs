@@ -68,6 +68,12 @@ namespace ComicReader.Models
         [JsonIgnore]
         public string DisplayTitle => PageCount > 0 ? $"{Title} ({PageCount} tr.)" : Title;
 
-        public override string ToString() => DisplayTitle;
+        /// <summary>
+        /// Concise chapter label (e.g., "Chương 10") shown in the chapter selector dropdown.
+        /// </summary>
+        [JsonIgnore]
+        public string ShortTitle => ChapterTitleHelper.FormatShortChapterTitle(Title);
+
+        public override string ToString() => ShortTitle;
     }
 }

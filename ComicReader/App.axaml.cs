@@ -25,6 +25,69 @@ namespace ComicReader
         /// </summary>
         public static Func<INativePdfRenderer?>? NativePdfRendererFactory { get; set; }
 
+        /// <summary>
+        /// True while the comic reader overlay is open.
+        /// </summary>
+        public static bool IsReaderOpen { get; private set; }
+
+        /// <summary>
+        /// Raised when the reader overlay opens or closes (used on Android to toggle KeepScreenOn).
+        /// </summary>
+        public static event Action<bool>? ReaderOpenStateChanged;
+
+        /// <summary>
+        /// Notifies platform listeners whether the reader view is currently open.
+        /// </summary>
+        public static void NotifyReaderOpenState(bool isOpen)
+        {
+            IsReaderOpen = isOpen;
+            ReaderOpenStateChanged?.Invoke(isOpen);
+        }
+
+        /// <summary>
+        /// Raised from Android native DispatchTouchEvent when a 2-finger pinch starts (midX_dp, midY_dp).
+        /// </summary>
+        public static event Action<double, double>? AndroidPinchStarted;
+
+        /// <summary>
+        /// Raised from Android native DispatchTouchEvent as 2 fingers pinch/pan (spanRatio, midX_dp, midY_dp).
+        /// </summary>
+        public static event Action<double, double, double>? AndroidPinchUpdated;
+
+        /// <summary>
+        /// Raised from Android native DispatchTouchEvent when the 2-finger pinch ends.
+        /// </summary>
+        public static event Action? AndroidPinchEnded;
+
+        public static void NotifyAndroidPinchStarted(double midXDip, double midYDip)
+            => AndroidPinchStarted?.Invoke(midXDip, midYDip);
+
+        public static void NotifyAndroidPinchUpdated(double spanRatio, double midXDip, double midYDip)
+            => AndroidPinchUpdated?.Invoke(spanRatio, midXDip, midYDip);
+
+        public static void NotifyAndroidPinchEnded()
+            => AndroidPinchEnded?.Invoke();
+
+        /// <summary>
+        /// Latest Android system bar insets (status bar, cutout, navigation bar) in DIPs.
+        /// </summary>
+        public static Thickness AndroidSafeAreaPadding { get; private set; }
+
+        /// <summary>
+        /// Raised when Android native system bar insets change.
+        /// </summary>
+        public static event Action<Thickness>? AndroidSafeAreaChanged;
+
+        /// <summary>
+        /// Updates cached Android system bar insets and notifies views on the UI thread.
+        /// </summary>
+        public static void NotifyAndroidSafeAreaChanged(Thickness padding)
+        {
+            if (AndroidSafeAreaPadding == padding) return;
+            AndroidSafeAreaPadding = padding;
+            Avalonia.Threading.Dispatcher.UIThread.Post(() => AndroidSafeAreaChanged?.Invoke(padding));
+        }
+
         public override void Initialize()
         {
             AvaloniaXamlLoader.Load(this);

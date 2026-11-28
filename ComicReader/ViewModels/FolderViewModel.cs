@@ -36,6 +36,9 @@ namespace ComicReader.ViewModels
         [ObservableProperty]
         private ObservableCollection<ComicBook> _folderComics = new();
 
+        [ObservableProperty]
+        private bool _isImporting;
+
         /// <summary>
         /// Indicates whether the user is currently viewing comics inside a specific folder.
         /// </summary>
@@ -112,6 +115,13 @@ namespace ComicReader.ViewModels
                 {
                     folderName = normalizedFolderPath;
                 }
+
+                IsImporting = true;
+                string startingMsg = OperatingSystem.IsAndroid()
+                    ? $"Đang import folder '{folderName}'..."
+                    : $"Importing folder '{folderName}'...";
+
+                Dispatcher.UIThread.Post(() => StatusChanged?.Invoke(startingMsg));
 
                 FolderParseResult parsed = await Task.Run(() => FolderChapterParser.ParseFolder(normalizedFolderPath));
 
@@ -194,6 +204,10 @@ namespace ComicReader.ViewModels
                     StatusChanged?.Invoke($"Import folder failed: {ex.Message}");
                     NotificationRequested?.Invoke($"Lỗi import folder: {ex.Message}", true);
                 });
+            }
+            finally
+            {
+                IsImporting = false;
             }
         }
 
@@ -293,7 +307,9 @@ namespace ComicReader.ViewModels
             if (exists) return false;
 
             Dispatcher.UIThread.Post(() =>
-                StatusChanged?.Invoke($"Importing {series.DisplayName} ({series.Chapters.Count} chương)..."));
+                StatusChanged?.Invoke(OperatingSystem.IsAndroid()
+                    ? $"Đang import folder '{folderName}': {series.DisplayName}..."
+                    : $"Importing {series.DisplayName} ({series.Chapters.Count} chương)..."));
 
             IComicReaderService reader = _readerFactory.GetReader(ComicFormat.Folder);
             int totalPages = series.Chapters[0].PageCount;
@@ -338,7 +354,9 @@ namespace ComicReader.ViewModels
             if (format == ComicFormat.Unknown) return false;
 
             Dispatcher.UIThread.Post(() =>
-                StatusChanged?.Invoke($"Importing {Path.GetFileName(filePath)}..."));
+                StatusChanged?.Invoke(OperatingSystem.IsAndroid()
+                    ? $"Đang import folder '{folderName}': {Path.GetFileName(filePath)}..."
+                    : $"Importing {Path.GetFileName(filePath)}..."));
 
             IComicReaderService reader = _readerFactory.GetReader(format);
 

@@ -28,6 +28,7 @@ namespace ComicReader.ViewModels
         private const int PreloadAheadCount = ViewportManager.PreloadAheadCount;
         private const int CompressedWindowRadius = ViewportManager.CompressedWindowRadius;
 
+        private static readonly NaturalStringComparer NaturalComparer = new();
         private readonly IComicReaderFactory _readerFactory;
         private readonly IStorageService _storageService;
         private readonly IBookmarkService _bookmarkService;
@@ -70,15 +71,18 @@ namespace ComicReader.ViewModels
         [NotifyPropertyChangedFor(nameof(CurrentChapterId))]
         [NotifyPropertyChangedFor(nameof(CurrentChapterBookmarks))]
         [NotifyPropertyChangedFor(nameof(IsCurrentPageBookmarked))]
+        [NotifyPropertyChangedFor(nameof(ShowEndOfChapterNextButton))]
         private ChapterModel? _selectedChapter;
 
         [ObservableProperty]
         private ObservableCollection<ComicPageItem> _pages = new();
 
         [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(ShowEndOfChapterNextButton))]
         private int _currentPage = 1;
 
         [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(ShowEndOfChapterNextButton))]
         private int _totalPages;
 
         [ObservableProperty]
@@ -99,6 +103,9 @@ namespace ComicReader.ViewModels
 
         [ObservableProperty]
         private bool _isBookmarkPanelOpen;
+
+        [ObservableProperty]
+        private bool _areToolbarsVisible = true;
 
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(CurrentChapterBookmarks))]
@@ -177,6 +184,12 @@ namespace ComicReader.ViewModels
         public bool HasPreviousChapter => SelectedChapter is not null && Chapters.IndexOf(SelectedChapter) > 0;
 
         /// <summary>
+        /// True on Android when the user is on the last page of a chapter and a next chapter exists.
+        /// </summary>
+        public bool ShowEndOfChapterNextButton =>
+            OperatingSystem.IsAndroid() && TotalPages > 0 && CurrentPage >= TotalPages && HasNextChapter;
+
+        /// <summary>
         /// Active chapter identifier used to isolate bookmarks and progress per chapter.
         /// </summary>
         public string CurrentChapterId => SelectedChapter?.ChapterId ?? _currentComic?.Id ?? string.Empty;
@@ -234,6 +247,7 @@ namespace ComicReader.ViewModels
 
             _currentComic = comic;
             ComicTitle = comic.DisplayName;
+            AreToolbarsVisible = true;
 
             IReadOnlyList<ChapterModel> discovered = await _readerFactory.DiscoverChaptersAsync(comic);
             if (_isClosed) return;
@@ -273,9 +287,19 @@ namespace ComicReader.ViewModels
                 return;
             }
 
-            Bookmarks = new ObservableCollection<Bookmark>(savedBookmarks);
+            if (!HasMultipleChapters)
+            {
+                foreach (Bookmark b in savedBookmarks)
+                {
+                    b.ChapterTitle = string.Empty;
+                }
+            }
 
             Bookmark? latestBookmark = savedBookmarks.OrderByDescending(b => b.CreatedAtUtc).FirstOrDefault();
+
+            var sortedBookmarks = new List<Bookmark>(savedBookmarks);
+            sortedBookmarks.Sort(CompareBookmarksDescending);
+            Bookmarks = new ObservableCollection<Bookmark>(sortedBookmarks);
 
             ChapterModel initialChapter = Chapters[0];
             if (latestBookmark is not null)
@@ -430,6 +454,16 @@ namespace ComicReader.ViewModels
 
         [RelayCommand]
         private void ToggleBookmarkPanel() => IsBookmarkPanelOpen = !IsBookmarkPanelOpen;
+
+        [RelayCommand]
+        private void ToggleToolbars()
+        {
+            AreToolbarsVisible = !AreToolbarsVisible;
+            if (!AreToolbarsVisible)
+            {
+                IsBookmarkPanelOpen = false;
+            }
+        }
 
         /// <summary>
         /// Updates the exact current page and intra-page scroll offset, loads nearby pages, and debounces progress saving.
@@ -814,7 +848,7 @@ namespace ComicReader.ViewModels
                 {
                     Bookmarks.Remove(existing);
                 }
-                Bookmarks.Add(bookmark);
+                InsertBookmarkSorted(bookmark);
             }
             else if (existing is not null)
             {
@@ -854,6 +888,68 @@ namespace ComicReader.ViewModels
 
             OnPropertyChanged(nameof(CurrentChapterBookmarks));
             OnPropertyChanged(nameof(IsCurrentPageBookmarked));
+        }
+
+        private void InsertBookmarkSorted(Bookmark bookmark)
+        {
+            int insertIndex = 0;
+            while (insertIndex < Bookmarks.Count && CompareBookmarksDescending(Bookmarks[insertIndex], bookmark) <= 0)
+            {
+                insertIndex++;
+            }
+            Bookmarks.Insert(insertIndex, bookmark);
+        }
+
+        private int CompareBookmarksDescending(Bookmark a, Bookmark b)
+        {
+            int orderA = ResolveBookmarkChapterOrder(a);
+            int orderB = ResolveBookmarkChapterOrder(b);
+
+            if (orderA >= 0 && orderB >= 0)
+            {
+                if (orderA != orderB)
+                {
+                    return orderB.CompareTo(orderA);
+                }
+            }
+            else if (orderA != orderB)
+            {
+                int titleCompare = NaturalComparer.Compare(b.ChapterTitle, a.ChapterTitle);
+                if (titleCompare != 0)
+                {
+                    return titleCompare;
+                }
+                return orderB.CompareTo(orderA);
+            }
+            else
+            {
+                int titleCompare = NaturalComparer.Compare(b.ChapterTitle, a.ChapterTitle);
+                if (titleCompare != 0)
+                {
+                    return titleCompare;
+                }
+            }
+
+            int pageCompare = b.PageNumber.CompareTo(a.PageNumber);
+            if (pageCompare != 0)
+            {
+                return pageCompare;
+            }
+
+            return b.CreatedAtUtc.CompareTo(a.CreatedAtUtc);
+        }
+
+        private int ResolveBookmarkChapterOrder(Bookmark bookmark)
+        {
+            string chapterId = GetNormalizedChapterId(bookmark);
+            for (int i = 0; i < Chapters.Count; i++)
+            {
+                if (string.Equals(Chapters[i].ChapterId, chapterId, StringComparison.Ordinal))
+                {
+                    return Chapters[i].OrderIndex >= 0 ? Chapters[i].OrderIndex : i;
+                }
+            }
+            return -1;
         }
 
         /// <summary>

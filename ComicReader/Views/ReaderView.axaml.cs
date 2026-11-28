@@ -1,10 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using ComicReader.Reader;
@@ -19,24 +21,45 @@ namespace ComicReader.Views
     public partial class ReaderView : UserControl
     {
         // ── constants ──────────────────────────────────────────────────────────
-        private const double AutoScrollDeadZone   = 8.0;
-        private const double AutoScrollSpeedFactor = 0.28;
-        private const int    SliderDebounceMs      = 80;
-        private const int    ScrollThrottleMs      = 80;
+        private const double AutoScrollDeadZone       = 8.0;
+        private const double AutoScrollSpeedFactor    = 0.28;
+        private const int    SliderDebounceMs         = 80;
+        private const int    ScrollThrottleMs         = 80;
+        private const double CenterClickMoveThreshold = 8.0;
+        private const int    CenterClickMaxDurationMs = 400;
+        private const double ToolbarTopClearancePx    = 54.0;
+        private const int    DoubleTapMaxDelayMs      = 240;
+        private const double DoubleTapMaxDistancePx   = 32.0;
 
         // ── private state ──────────────────────────────────────────────────────
         private ScrollViewer?      _scrollViewer;
         private DispatcherTimer?   _autoScrollTimer;
         private DispatcherTimer?   _sliderDebounceTimer;
         private DispatcherTimer?   _scrollDebounceTimer;
+        private DispatcherTimer?   _singleTapToolbarTimer;
         private DateTime           _lastScrollProcessUtc = DateTime.MinValue;
         private DateTime           _suppressScrollUntilUtc = DateTime.MinValue;
         private Point              _lastDragPoint;
         private Point?             _pendingZoomAnchor;
         private Point              _autoScrollOrigin;
         private Point              _autoScrollCurrent;
+        private Point              _pointerPressOrigin;
+        private DateTime           _pointerPressUtc;
+        private DateTime           _lastTapUtc = DateTime.MinValue;
+        private Point              _lastTapOrigin;
+        private bool               _isPotentialCenterClick;
         private bool               _isDragging;
         private bool               _isAutoScrolling;
+        private bool               _isPinching;
+        private double             _currentScale = 1.0;
+        private double             _currentTranslateX = 0.0;
+        private double             _currentTranslateY = 0.0;
+        private double             _pinchStartScale = 1.0;
+        private double             _pinchStartTx = 0.0;
+        private double             _pinchStartTy = 0.0;
+        private Point              _pinchContentPoint;
+        private ScaleTransform?    _pinchScaleTransform;
+        private TranslateTransform? _pinchTranslateTransform;
         private bool               _isSuppressingScrollTracking;
         private bool               _isResizeRestorePending;
         // Tracks whether the slider thumb is currently being dragged by the user.
@@ -97,6 +120,17 @@ namespace ComicReader.Views
         /// <summary>Strongly-typed ViewModel for use in DataTemplate CompiledBindings.</summary>
         public ReaderViewModel? ViewModel => DataContext as ReaderViewModel;
 
+        /// <summary>True when running on Android so mobile-only layout &amp; touch gestures apply.</summary>
+        public bool IsAndroidPlatform { get; } = OperatingSystem.IsAndroid();
+
+        /// <summary>Zero gap between pages on Android; subtle 6px margin on Desktop.</summary>
+        public Thickness PageItemMargin { get; } = OperatingSystem.IsAndroid()
+            ? new Thickness(0)
+            : new Thickness(0, 6, 0, 6);
+
+        /// <summary>Responsive bookmark drawer width (280 on Android phones, 320 on Desktop).</summary>
+        public double BookmarkDrawerWidth { get; } = OperatingSystem.IsAndroid() ? 280.0 : 320.0;
+
         // ── constructor ────────────────────────────────────────────────────────
         public ReaderView()
         {
@@ -143,6 +177,20 @@ namespace ComicReader.Views
 
             _scrollDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ScrollThrottleMs) };
             _scrollDebounceTimer.Tick += OnScrollDebounceTick;
+
+            if (IsAndroidPlatform)
+            {
+                _singleTapToolbarTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(DoubleTapMaxDelayMs) };
+                _singleTapToolbarTimer.Tick += OnSingleTapToolbarTimerTick;
+
+                _pinchScaleTransform = new ScaleTransform(1.0, 1.0);
+                _pinchTranslateTransform = new TranslateTransform(0.0, 0.0);
+                PagesListBox.RenderTransformOrigin = RelativePoint.TopLeft;
+                PagesListBox.RenderTransform = new TransformGroup
+                {
+                    Children = { _pinchScaleTransform, _pinchTranslateTransform }
+                };
+            }
         }
 
         // ── lifecycle ──────────────────────────────────────────────────────────
@@ -151,7 +199,20 @@ namespace ComicReader.Views
             AttachScrollViewer();
             IsCompactLayout = Bounds.Width > 0 && Bounds.Width < 760;
             TopLevel? topLevel = TopLevel.GetTopLevel(this);
-            if (topLevel?.InsetsManager is { } insets)
+            if (IsAndroidPlatform)
+            {
+                SafeAreaPadding = App.AndroidSafeAreaPadding;
+                App.AndroidSafeAreaChanged -= OnAndroidSafeAreaChanged;
+                App.AndroidSafeAreaChanged += OnAndroidSafeAreaChanged;
+
+                App.AndroidPinchStarted -= OnAndroidPinchStarted;
+                App.AndroidPinchStarted += OnAndroidPinchStarted;
+                App.AndroidPinchUpdated -= OnAndroidPinchUpdated;
+                App.AndroidPinchUpdated += OnAndroidPinchUpdated;
+                App.AndroidPinchEnded -= OnAndroidPinchEnded;
+                App.AndroidPinchEnded += OnAndroidPinchEnded;
+            }
+            else if (topLevel?.InsetsManager is { } insets)
             {
                 SafeAreaPadding = insets.SafeAreaPadding;
                 insets.SafeAreaChanged += (_, args) => SafeAreaPadding = args.SafeAreaPadding;
@@ -192,9 +253,13 @@ namespace ComicReader.Views
             _subscribedViewModel = DataContext as ReaderViewModel;
             _sliderDebounceTimer?.Stop();
             _scrollDebounceTimer?.Stop();
+            _singleTapToolbarTimer?.Stop();
             StopAutoScroll();
-            _isDragging       = false;
-            _isDraggingSlider = false;
+            ResetPinchVisualTransform();
+            _isPinching             = false;
+            _isDragging             = false;
+            _isPotentialCenterClick = false;
+            _isDraggingSlider       = false;
             _isSuppressingScrollTracking = false;
 
             if (_scrollViewer is not null)
@@ -275,7 +340,18 @@ namespace ComicReader.Views
                 }
                 _hostWindow = null;
             }
+            if (IsAndroidPlatform)
+            {
+                App.AndroidSafeAreaChanged -= OnAndroidSafeAreaChanged;
+                App.AndroidPinchStarted -= OnAndroidPinchStarted;
+                App.AndroidPinchUpdated -= OnAndroidPinchUpdated;
+                App.AndroidPinchEnded -= OnAndroidPinchEnded;
+            }
             IsFullScreen = false;
+            _isPotentialCenterClick = false;
+            ResetPinchVisualTransform();
+            _isPinching = false;
+            _singleTapToolbarTimer?.Stop();
             _sliderDebounceTimer?.Stop();
             _scrollDebounceTimer?.Stop();
             StopAutoScroll();
@@ -371,12 +447,20 @@ namespace ComicReader.Views
 
         private void OnFitWidthRequested()
         {
+            if (IsAndroidPlatform && _currentScale > 1.05)
+            {
+                ResetPinchVisualTransform();
+            }
             if (_subscribedViewModel is null) return;
             _subscribedViewModel.SetZoomFromView(Helpers.AppConstants.DefaultZoomLevel, preserveFocal: true);
         }
 
         private void OnFitPageRequested()
         {
+            if (IsAndroidPlatform && _currentScale > 1.05)
+            {
+                ResetPinchVisualTransform();
+            }
             if (_subscribedViewModel is null) return;
             ScrollViewer? sv = AttachScrollViewer();
             if (sv is null || sv.Viewport.Height <= 0 || BasePageWidth <= 0) return;
@@ -395,7 +479,9 @@ namespace ComicReader.Views
         {
             double width = PagesListBox.Bounds.Width;
             if (width <= 0) return;
-            double target = Math.Max(320.0, width - 32.0);
+            double sidePadding = IsAndroidPlatform ? 0.0 : 32.0;
+            double minWidth = IsAndroidPlatform ? 200.0 : 320.0;
+            double target = Math.Max(minWidth, width - sidePadding);
             if (Math.Abs(BasePageWidth - target) >= 1.0)
             {
                 BasePageWidth = target;
@@ -463,6 +549,11 @@ namespace ComicReader.Views
         {
             if (_subscribedViewModel is null || pageIndex < 0 || pageIndex >= _subscribedViewModel.Pages.Count) return;
 
+            if (IsAndroidPlatform && _currentScale > 1.05)
+            {
+                ResetPinchVisualTransform();
+            }
+
             _isSuppressingScrollTracking = true;
             _scrollDebounceTimer?.Stop();
 
@@ -482,9 +573,10 @@ namespace ComicReader.Views
                     }
                     if (container is not null)
                     {
+                        double topClearance = (_subscribedViewModel?.AreToolbarsVisible ?? true) ? ToolbarTopClearancePx : 0.0;
                         Point? pt = container.TranslatePoint(new Point(0, 0), sv);
-                        if (pt.HasValue && Math.Abs(pt.Value.Y) > 2.0)
-                            sv.Offset = new Vector(sv.Offset.X, Math.Max(0, sv.Offset.Y + pt.Value.Y));
+                        if (pt.HasValue && Math.Abs(pt.Value.Y - topClearance) > 2.0)
+                            sv.Offset = new Vector(sv.Offset.X, Math.Max(0, sv.Offset.Y + pt.Value.Y - topClearance));
                     }
                     else
                     {
@@ -495,9 +587,10 @@ namespace ComicReader.Views
                             Control? c2 = PagesListBox.ContainerFromIndex(pageIndex);
                             if (c2 is not null && AttachScrollViewer() is { } sv2)
                             {
+                                double topClearance = (_subscribedViewModel?.AreToolbarsVisible ?? true) ? ToolbarTopClearancePx : 0.0;
                                 Point? pt2 = c2.TranslatePoint(new Point(0, 0), sv2);
                                 if (pt2.HasValue)
-                                    sv2.Offset = new Vector(sv2.Offset.X, Math.Max(0, sv2.Offset.Y + pt2.Value.Y));
+                                    sv2.Offset = new Vector(sv2.Offset.X, Math.Max(0, sv2.Offset.Y + pt2.Value.Y - topClearance));
                             }
                         }, DispatcherPriority.Background);
                     }
@@ -523,11 +616,12 @@ namespace ComicReader.Views
                     Control? container = PagesListBox.ContainerFromIndex(pageNumber - 1);
                     if (container is not null)
                     {
+                        double topClearance = (_subscribedViewModel?.AreToolbarsVisible ?? true) ? ToolbarTopClearancePx : 0.0;
                         Point? pt = container.TranslatePoint(new Point(0, 0), sv);
                         if (pt.HasValue)
                         {
                             double localOffset = Math.Clamp(pageLocalRatio, 0.0, 1.0) * container.Bounds.Height;
-                            sv.Offset = new Vector(sv.Offset.X, Math.Max(0, sv.Offset.Y + pt.Value.Y + localOffset));
+                            sv.Offset = new Vector(sv.Offset.X, Math.Max(0, sv.Offset.Y + pt.Value.Y + localOffset - topClearance));
                         }
                     }
                 }
@@ -548,9 +642,16 @@ namespace ComicReader.Views
             if (sender is not Control element) return;
             if (element.DataContext is not Models.ComicPageItem pageItem) return;
 
-            if (pageItem.Image is not null && e.NewSize.Height > pageItem.PlaceholderHeight)
+            if (pageItem.Image is not null && e.NewSize.Height > 10.0)
             {
-                pageItem.PlaceholderHeight = e.NewSize.Height;
+                if (IsAndroidPlatform)
+                {
+                    pageItem.PlaceholderHeight = e.NewSize.Height;
+                }
+                else if (e.NewSize.Height > pageItem.PlaceholderHeight)
+                {
+                    pageItem.PlaceholderHeight = e.NewSize.Height;
+                }
             }
 
             // Ignore initial realization/measure (PreviousSize == 0) to prevent runaway scroll-to-bottom cascades.
@@ -578,10 +679,23 @@ namespace ComicReader.Views
             ScrollViewer? sv = AttachScrollViewer();
             if (sv is null) return;
 
+            // When zoomed in on Android, single-finger drag pans the zoomed view smoothly like photo gallery
+            if (IsAndroidPlatform && _currentScale > 1.05)
+            {
+                _lastDragPoint = e.GetPosition(this);
+                _isDragging = true;
+                _isPotentialCenterClick = true;
+                _pointerPressOrigin = _lastDragPoint;
+                _pointerPressUtc = DateTime.UtcNow;
+                e.Handled = true;
+                return;
+            }
+
             PointerPointProperties props = e.GetCurrentPoint(sv).Properties;
 
             if (props.IsMiddleButtonPressed)
             {
+                _isPotentialCenterClick = false;
                 ToggleAutoScroll(e.GetPosition(sv));
                 e.Handled = true;
                 return;
@@ -589,20 +703,57 @@ namespace ComicReader.Views
 
             if (_isAutoScrolling)
             {
+                _isPotentialCenterClick = false;
                 StopAutoScroll();
                 e.Handled = true;
                 return;
             }
 
-            if (props.IsLeftButtonPressed && !IsPointerOverScrollBar(e.Source as Visual))
+            if ((props.IsLeftButtonPressed || e.Pointer.Type == PointerType.Touch) && !IsPointerOverScrollBar(e.Source as Visual))
             {
                 _lastDragPoint = e.GetPosition(sv);
-                _isDragging    = true;
+                _isDragging    = !(IsAndroidPlatform && e.Pointer.Type == PointerType.Touch);
+
+                Point viewportPos = e.GetPosition(PagesListBox);
+                bool isInteractiveControl = e.Source is Visual src && src.FindAncestorOfType<Button>(includeSelf: true) is not null;
+                _isPotentialCenterClick = !isInteractiveControl
+                    && (IsAndroidPlatform || e.ClickCount == 1);
+
+                if (_isPotentialCenterClick)
+                {
+                    _pointerPressOrigin = viewportPos;
+                    _pointerPressUtc = DateTime.UtcNow;
+                }
             }
         }
 
         private void OnScrollAreaPointerMoved(object? sender, PointerEventArgs e)
         {
+            if (_isPinching)
+            {
+                return;
+            }
+
+            if (IsAndroidPlatform && _currentScale > 1.05 && _isDragging)
+            {
+                Point current = e.GetPosition(this);
+                double dX = current.X - _lastDragPoint.X;
+                double dY = current.Y - _lastDragPoint.Y;
+
+                if ((dX * dX + dY * dY) > (CenterClickMoveThreshold * CenterClickMoveThreshold))
+                {
+                    _isPotentialCenterClick = false;
+                }
+
+                _currentTranslateX += dX;
+                _currentTranslateY += dY;
+                ClampTranslation(ref _currentTranslateX, ref _currentTranslateY, _currentScale);
+                ApplyVisualTransform();
+                _lastDragPoint = current;
+                e.Handled = true;
+                return;
+            }
+
             ScrollViewer? sv = AttachScrollViewer();
             if (sv is null) return;
 
@@ -612,27 +763,88 @@ namespace ComicReader.Views
                 return;
             }
 
+            if (_isPotentialCenterClick)
+            {
+                Point viewportPos = e.GetPosition(PagesListBox);
+                double dxMove = viewportPos.X - _pointerPressOrigin.X;
+                double dyMove = viewportPos.Y - _pointerPressOrigin.Y;
+                if ((dxMove * dxMove + dyMove * dyMove) > (CenterClickMoveThreshold * CenterClickMoveThreshold))
+                {
+                    _isPotentialCenterClick = false;
+                }
+            }
+
             if (!_isDragging) return;
 
-            if (!e.GetCurrentPoint(sv).Properties.IsLeftButtonPressed)
+            if (!e.GetCurrentPoint(sv).Properties.IsLeftButtonPressed && e.Pointer.Type != PointerType.Touch)
             {
                 _isDragging = false;
                 return;
             }
 
-            Point current = e.GetPosition(sv);
-            double dX = current.X - _lastDragPoint.X;
-            double dY = current.Y - _lastDragPoint.Y;
+            Point cur = e.GetPosition(sv);
+            double deltaX = cur.X - _lastDragPoint.X;
+            double deltaY = cur.Y - _lastDragPoint.Y;
 
             sv.Offset = new Vector(
-                Math.Max(0, sv.Offset.X - dX),
-                Math.Max(0, sv.Offset.Y - dY));
+                Math.Max(0, sv.Offset.X - deltaX),
+                Math.Max(0, sv.Offset.Y - deltaY));
 
-            _lastDragPoint = current;
+            _lastDragPoint = cur;
         }
 
         private void OnScrollAreaPointerReleased(object? sender, PointerReleasedEventArgs e)
         {
+            if (_isPinching)
+            {
+                _isDragging = false;
+                _isPotentialCenterClick = false;
+                return;
+            }
+
+            if (IsAndroidPlatform && _currentScale > 1.05)
+            {
+                _isDragging = false;
+                if (_isPotentialCenterClick)
+                {
+                    _isPotentialCenterClick = false;
+                    Point releasePos = e.GetPosition(this);
+                    double dx = releasePos.X - _pointerPressOrigin.X;
+                    double dy = releasePos.Y - _pointerPressOrigin.Y;
+                    double elapsedMs = (DateTime.UtcNow - _pointerPressUtc).TotalMilliseconds;
+
+                    if ((dx * dx + dy * dy) <= (CenterClickMoveThreshold * CenterClickMoveThreshold)
+                        && elapsedMs <= CenterClickMaxDurationMs)
+                    {
+                        DateTime now = DateTime.UtcNow;
+                        double sinceLastTap = (now - _lastTapUtc).TotalMilliseconds;
+                        double tapDx = releasePos.X - _lastTapOrigin.X;
+                        double tapDy = releasePos.Y - _lastTapOrigin.Y;
+                        bool isDoubleTap = sinceLastTap <= DoubleTapMaxDelayMs
+                            && (tapDx * tapDx + tapDy * tapDy) <= (DoubleTapMaxDistancePx * DoubleTapMaxDistancePx);
+
+                        if (isDoubleTap)
+                        {
+                            _singleTapToolbarTimer?.Stop();
+                            _lastTapUtc = DateTime.MinValue;
+                            ResetPinchVisualTransform();
+                            e.Handled = true;
+                            return;
+                        }
+
+                        _lastTapUtc = now;
+                        _lastTapOrigin = releasePos;
+                        if (IsInCenterClickZone(releasePos))
+                        {
+                            _singleTapToolbarTimer?.Stop();
+                            _singleTapToolbarTimer?.Start();
+                        }
+                    }
+                }
+                e.Handled = true;
+                return;
+            }
+
             ScrollViewer? sv = AttachScrollViewer();
 
             if (e.InitialPressMouseButton == MouseButton.Middle && _isAutoScrolling && sv is not null)
@@ -641,16 +853,199 @@ namespace ComicReader.Views
                     StopAutoScroll();
             }
 
-            if (_isDragging && e.InitialPressMouseButton == MouseButton.Left)
+            if (_isDragging && (e.InitialPressMouseButton == MouseButton.Left || e.Pointer.Type == PointerType.Touch))
             {
                 _isDragging = false;
                 if (Equals(e.Pointer.Captured, PagesListBox))
                     e.Pointer.Capture(null);
             }
+
+            bool canHandleTap = _isPotentialCenterClick
+                && (e.InitialPressMouseButton == MouseButton.Left || e.Pointer.Type == PointerType.Touch);
+            _isPotentialCenterClick = false;
+
+            if (canHandleTap && _subscribedViewModel is not null)
+            {
+                Point releasePos = e.GetPosition(PagesListBox);
+                double dx = releasePos.X - _pointerPressOrigin.X;
+                double dy = releasePos.Y - _pointerPressOrigin.Y;
+                double elapsedMs = (DateTime.UtcNow - _pointerPressUtc).TotalMilliseconds;
+
+                if ((dx * dx + dy * dy) <= (CenterClickMoveThreshold * CenterClickMoveThreshold)
+                    && elapsedMs <= CenterClickMaxDurationMs)
+                {
+                    if (IsAndroidPlatform)
+                    {
+                        DateTime now = DateTime.UtcNow;
+                        double sinceLastTap = (now - _lastTapUtc).TotalMilliseconds;
+                        double tapDx = releasePos.X - _lastTapOrigin.X;
+                        double tapDy = releasePos.Y - _lastTapOrigin.Y;
+                        bool isDoubleTap = sinceLastTap <= DoubleTapMaxDelayMs
+                            && (tapDx * tapDx + tapDy * tapDy) <= (DoubleTapMaxDistancePx * DoubleTapMaxDistancePx);
+
+                        if (isDoubleTap)
+                        {
+                            _singleTapToolbarTimer?.Stop();
+                            _lastTapUtc = DateTime.MinValue;
+                            double targetScale = 2.0;
+                            Point tapPos = e.GetPosition(this);
+                            double targetTx = tapPos.X - targetScale * tapPos.X;
+                            double targetTy = tapPos.Y - targetScale * tapPos.Y;
+                            ClampTranslation(ref targetTx, ref targetTy, targetScale);
+                            _currentScale = targetScale;
+                            _currentTranslateX = targetTx;
+                            _currentTranslateY = targetTy;
+                            ApplyVisualTransform();
+                            return;
+                        }
+
+                        _lastTapUtc = now;
+                        _lastTapOrigin = releasePos;
+                        if (IsInCenterClickZone(releasePos))
+                        {
+                            _singleTapToolbarTimer?.Stop();
+                            _singleTapToolbarTimer?.Start();
+                        }
+                    }
+                    else if (IsInCenterClickZone(releasePos))
+                    {
+                        _subscribedViewModel.ToggleToolbarsCommand.Execute(null);
+                    }
+                }
+            }
         }
 
         private void OnScrollAreaPointerCaptureLost(object? sender, PointerCaptureLostEventArgs e)
-            => _isDragging = false;
+        {
+            _isDragging = false;
+            _isPotentialCenterClick = false;
+        }
+
+        private void OnAndroidPinchStarted(double winXDip, double winYDip)
+        {
+            if (_subscribedViewModel is null || _subscribedViewModel.IsBookmarkPanelOpen) return;
+
+            _isPinching = true;
+            _isDragging = false;
+            _isPotentialCenterClick = false;
+            _singleTapToolbarTimer?.Stop();
+
+            Point focal = MapTopLevelDipToReaderView(winXDip, winYDip);
+            _pinchStartScale = _currentScale;
+            _pinchStartTx = _currentTranslateX;
+            _pinchStartTy = _currentTranslateY;
+
+            // Content position under the initial focal point: C = (F - T) / S
+            _pinchContentPoint = new Point(
+                (focal.X - _pinchStartTx) / _pinchStartScale,
+                (focal.Y - _pinchStartTy) / _pinchStartScale);
+        }
+
+        private void OnAndroidPinchUpdated(double spanRatio, double winXDip, double winYDip)
+        {
+            if (!_isPinching || _subscribedViewModel is null || _pinchStartScale <= 0.0) return;
+
+            Point currentFocal = MapTopLevelDipToReaderView(winXDip, winYDip);
+            double targetScale = Math.Clamp(_pinchStartScale * spanRatio, 0.85, Helpers.AppConstants.MaxZoomLevel);
+
+            // Exact focal point preservation: T' = F' - S' * C
+            double targetTx = currentFocal.X - targetScale * _pinchContentPoint.X;
+            double targetTy = currentFocal.Y - targetScale * _pinchContentPoint.Y;
+
+            if (targetScale >= 1.0)
+            {
+                ClampTranslation(ref targetTx, ref targetTy, targetScale);
+            }
+
+            _currentScale = targetScale;
+            _currentTranslateX = targetTx;
+            _currentTranslateY = targetTy;
+
+            ApplyVisualTransform();
+        }
+
+        private void OnAndroidPinchEnded()
+        {
+            if (!_isPinching) return;
+            _isPinching = false;
+
+            if (_currentScale <= 1.05)
+            {
+                _currentScale = 1.0;
+                _currentTranslateX = 0.0;
+                _currentTranslateY = 0.0;
+            }
+            else
+            {
+                ClampTranslation(ref _currentTranslateX, ref _currentTranslateY, _currentScale);
+            }
+            ApplyVisualTransform();
+        }
+
+        private void ApplyVisualTransform()
+        {
+            if (_pinchScaleTransform is not null)
+            {
+                _pinchScaleTransform.ScaleX = _currentScale;
+                _pinchScaleTransform.ScaleY = _currentScale;
+            }
+            if (_pinchTranslateTransform is not null)
+            {
+                _pinchTranslateTransform.X = _currentTranslateX;
+                _pinchTranslateTransform.Y = _currentTranslateY;
+            }
+        }
+
+        private void ClampTranslation(ref double tx, ref double ty, double scale)
+        {
+            double vw = Bounds.Width > 0 ? Bounds.Width : PagesListBox.Bounds.Width;
+            double vh = Bounds.Height > 0 ? Bounds.Height : PagesListBox.Bounds.Height;
+            if (vw <= 0 || vh <= 0 || scale <= 1.0)
+            {
+                tx = 0.0;
+                ty = 0.0;
+                return;
+            }
+
+            double minX = vw - scale * vw;
+            double maxX = 0.0;
+            tx = Math.Clamp(tx, minX, maxX);
+
+            double minY = vh - scale * vh;
+            double maxY = 0.0;
+            ty = Math.Clamp(ty, minY, maxY);
+        }
+
+        private Point MapTopLevelDipToReaderView(double winXDip, double winYDip)
+        {
+            TopLevel? topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel is not null)
+            {
+                // 'this' (ReaderView) has no RenderTransform, avoiding any positive feedback translation corruption
+                Point? origin = this.TranslatePoint(new Point(0, 0), topLevel);
+                if (origin.HasValue)
+                {
+                    return new Point(winXDip - origin.Value.X, winYDip - origin.Value.Y);
+                }
+            }
+            return new Point(winXDip, winYDip);
+        }
+
+        private void ResetPinchVisualTransform()
+        {
+            _currentScale = 1.0;
+            _currentTranslateX = 0.0;
+            _currentTranslateY = 0.0;
+            ApplyVisualTransform();
+        }
+
+        private void OnAndroidSafeAreaChanged(Thickness padding) => SafeAreaPadding = padding;
+
+        private void OnSingleTapToolbarTimerTick(object? sender, EventArgs e)
+        {
+            _singleTapToolbarTimer?.Stop();
+            _subscribedViewModel?.ToggleToolbarsCommand.Execute(null);
+        }
 
         private void OnScrollAreaPointerWheelChanged(object? sender, PointerWheelEventArgs e)
         {
@@ -884,6 +1279,16 @@ namespace ComicReader.Views
         }
 
         // ── helpers ────────────────────────────────────────────────────────────
+        private bool IsInCenterClickZone(Point pos)
+        {
+            double w = PagesListBox.Bounds.Width;
+            double h = PagesListBox.Bounds.Height;
+            if (w <= 0 || h <= 0) return false;
+
+            return pos.X >= w * 0.20 && pos.X <= w * 0.80
+                && pos.Y >= h * 0.15 && pos.Y <= h * 0.85;
+        }
+
         private static bool IsPointerOverScrollBar(Visual? source)
             => source?.FindAncestorOfType<ScrollBar>(includeSelf: true) is not null;
 

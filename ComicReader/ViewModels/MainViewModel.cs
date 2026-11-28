@@ -275,7 +275,10 @@ namespace ComicReader.ViewModels
             if (string.IsNullOrWhiteSpace(section)) return;
 
             ActiveSection = section;
-            StatusMessage = $"Viewing {section}";
+            if (!IsBusy && !FolderVm.IsImporting)
+            {
+                StatusMessage = $"Viewing {section}";
+            }
         }
 
         /// <summary>
@@ -513,6 +516,7 @@ namespace ComicReader.ViewModels
             var readerVm = new ReaderViewModel(_readerFactory, _storageService, _bookmarkService);
             readerVm.CloseRequested += OnReaderClosed;
             ActiveReader = readerVm;
+            App.NotifyReaderOpenState(true);
 
             await readerVm.LoadComicAsync(comic);
         }
@@ -524,6 +528,7 @@ namespace ComicReader.ViewModels
                 ActiveReader.CloseRequested -= OnReaderClosed;
                 ActiveReader = null;
             }
+            App.NotifyReaderOpenState(false);
 
             // ComicBook properties (CurrentPage, TotalPages, ProgressPercentage) are already updated
             // in-memory via INotifyPropertyChanged, avoiding an expensive disk reload and UI rebuild.
@@ -544,7 +549,9 @@ namespace ComicReader.ViewModels
             if (format == ComicFormat.Unknown) return false;
 
             Dispatcher.UIThread.Post(() =>
-                StatusMessage = $"Importing {Path.GetFileName(filePath)}...");
+                StatusMessage = OperatingSystem.IsAndroid()
+                    ? $"Đang import comic '{Path.GetFileName(filePath)}'..."
+                    : $"Importing {Path.GetFileName(filePath)}...");
 
             IComicReaderService reader = _readerFactory.GetReader(format);
 
