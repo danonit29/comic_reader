@@ -8,6 +8,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using ComicReader.Helpers;
 using ComicReader.Models;
+using ComicReader.Services;
 using ComicReader.Services.Interfaces;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -61,6 +62,11 @@ namespace ComicReader.ViewModels
         public event Action<string, bool>? NotificationRequested;
 
         /// <summary>
+        /// Event raised after a folder is imported so the main UI can refresh and display it.
+        /// </summary>
+        public event Action<ComicFolder>? FolderImported;
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="FolderViewModel"/> class.
         /// </summary>
         public FolderViewModel(
@@ -88,46 +94,107 @@ namespace ComicReader.ViewModels
         }
 
         /// <summary>
-        /// Prompts the user to pick a folder via Avalonia StorageProvider and imports all supported comics inside it.
+        /// Prompts the user to pick a folder via Avalonia StorageProvider and recursively imports
+        /// multi-level comic series/chapters (&lt; 200 pages each) plus any archive comics inside it.
         /// </summary>
         [RelayCommand]
         public async Task ImportFolderAsync()
         {
-            string? folderPath = await _fileService.PickFolderAsync();
-            if (string.IsNullOrWhiteSpace(folderPath)) return;
-
-            string folderName = Path.GetFileName(folderPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-            IReadOnlyList<string> comicFiles = await Task.Run(() => _fileService.GetComicFilesInFolder(folderPath));
-
-            if (comicFiles.Count == 0)
+            try
             {
-                string emptyMsg = $"No supported comics found in '{folderName}'.";
+                string? folderPath = await _fileService.PickFolderAsync();
+                if (string.IsNullOrWhiteSpace(folderPath)) return;
+
+                string normalizedFolderPath = Path.GetFullPath(folderPath)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string folderName = Path.GetFileName(normalizedFolderPath);
+                if (string.IsNullOrWhiteSpace(folderName))
+                {
+                    folderName = normalizedFolderPath;
+                }
+
+                FolderParseResult parsed = await Task.Run(() => FolderChapterParser.ParseFolder(normalizedFolderPath));
+
+                if (parsed.SeriesGroups.Count == 0 && parsed.ArchiveFiles.Count == 0)
+                {
+                    string emptyMsg = $"No supported comics found in '{folderName}'.";
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        StatusChanged?.Invoke(emptyMsg);
+                        NotificationRequested?.Invoke(emptyMsg, true);
+                    });
+                    return;
+                }
+
+                int importedCount = 0;
+                int failedCount = 0;
+
+                foreach (FolderSeriesGroup series in parsed.SeriesGroups)
+                {
+                    try
+                    {
+                        if (await TryImportFolderSeriesAsync(series, folderName, normalizedFolderPath))
+                        {
+                            importedCount++;
+                        }
+                    }
+                    catch
+                    {
+                        failedCount++;
+                    }
+                }
+
+                foreach (string filePath in parsed.ArchiveFiles)
+                {
+                    try
+                    {
+                        if (await TryImportFolderComicAsync(filePath, folderName, normalizedFolderPath))
+                        {
+                            importedCount++;
+                        }
+                    }
+                    catch
+                    {
+                        failedCount++;
+                    }
+                }
+
+                ComicFolder registeredFolder = EnsureFolderRegistered(folderName, normalizedFolderPath);
+                await _storageService.SaveAsync(_libraryStore);
+
+                string summary = parsed.Warnings.Count > 0
+                    ? $"Đã import {importedCount} truyện từ '{folderName}' ({parsed.Warnings.Count} chương > 199 trang đã được tự động chia nhỏ)."
+                    : importedCount > 0
+                        ? $"Imported {importedCount} comic(s) from '{folderName}'."
+                        : $"Thư mục '{folderName}' đã có sẵn trong thư viện.";
+
+                string toast = failedCount > 0
+                    ? $"Đã import {importedCount} truyện ({failedCount} file lỗi)"
+                    : parsed.Warnings.Count > 0
+                        ? parsed.Warnings[0]
+                        : importedCount > 0
+                            ? "Đã import xong folder"
+                            : "Thư mục này đã có trong thư viện";
+
+                RefreshCombinedItems();
+                if (SelectedFolder is not null &&
+                    string.Equals(SelectedFolder.FolderPath, registeredFolder.FolderPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    LoadFolderComics(SelectedFolder);
+                }
+
+                StatusChanged?.Invoke(summary);
+                NotificationRequested?.Invoke(toast, failedCount > 0 && importedCount == 0);
+                FolderImported?.Invoke(registeredFolder);
+            }
+            catch (Exception ex)
+            {
                 Dispatcher.UIThread.Post(() =>
                 {
-                    StatusChanged?.Invoke(emptyMsg);
-                    NotificationRequested?.Invoke(emptyMsg, true);
+                    StatusChanged?.Invoke($"Import folder failed: {ex.Message}");
+                    NotificationRequested?.Invoke($"Lỗi import folder: {ex.Message}", true);
                 });
-                return;
             }
-
-            int importedCount = 0;
-            foreach (string filePath in comicFiles)
-            {
-                if (await TryImportFolderComicAsync(filePath, folderName, folderPath))
-                {
-                    importedCount++;
-                }
-            }
-
-            EnsureFolderRegistered(folderName, folderPath);
-            await _storageService.SaveAsync(_libraryStore);
-
-            Dispatcher.UIThread.Post(() =>
-            {
-                RefreshCombinedItems();
-                StatusChanged?.Invoke($"Imported {importedCount} comic(s) from '{folderName}'.");
-                NotificationRequested?.Invoke("Đã import xong folder", false);
-            });
         }
 
         /// <summary>
@@ -199,19 +266,66 @@ namespace ComicReader.ViewModels
             FolderComics = new ObservableCollection<ComicBook>(items);
         }
 
-        private void EnsureFolderRegistered(string folderName, string folderPath)
+        private ComicFolder EnsureFolderRegistered(string folderName, string folderPath)
         {
-            bool exists = _libraryStore.Folders.Any(f =>
+            ComicFolder? existing = _libraryStore.Folders.FirstOrDefault(f =>
                 f.FolderPath.Equals(folderPath, StringComparison.OrdinalIgnoreCase));
 
-            if (!exists)
+            if (existing is null)
             {
-                _libraryStore.Folders.Add(new ComicFolder
+                existing = new ComicFolder
                 {
                     DisplayName = folderName,
                     FolderPath = folderPath
-                });
+                };
+                _libraryStore.Folders.Add(existing);
             }
+
+            return existing;
+        }
+
+        private async Task<bool> TryImportFolderSeriesAsync(FolderSeriesGroup series, string folderName, string folderPath)
+        {
+            if (series.Chapters.Count == 0) return false;
+
+            bool exists = _libraryStore.Comics.Any(c =>
+                c.FilePath.Equals(series.SeriesPath, StringComparison.OrdinalIgnoreCase));
+            if (exists) return false;
+
+            Dispatcher.UIThread.Post(() =>
+                StatusChanged?.Invoke($"Importing {series.DisplayName} ({series.Chapters.Count} chương)..."));
+
+            IComicReaderService reader = _readerFactory.GetReader(ComicFormat.Folder);
+            int totalPages = series.Chapters[0].PageCount;
+
+            var comic = new ComicBook
+            {
+                DisplayName = series.DisplayName,
+                FilePath = series.SeriesPath,
+                ParentFolderName = folderName,
+                ParentFolderPath = folderPath,
+                Format = ComicFormat.Folder,
+                TotalPages = totalPages,
+                CurrentPage = 1,
+                ZoomLevel = AppConstants.DefaultZoomLevel,
+                LastAccessedTime = DateTime.MinValue
+            };
+
+            try
+            {
+                using Bitmap? cover = await reader.ExtractCoverAsync(series.SeriesPath);
+                if (cover is not null)
+                {
+                    comic.CoverImagePath = await _fileService.SaveCoverImageAsync(comic.Id, cover);
+                }
+            }
+            catch
+            {
+                // Cover extraction failure should never block importing the series.
+            }
+
+            _libraryStore.Comics.Add(comic);
+            return true;
         }
 
         private async Task<bool> TryImportFolderComicAsync(string filePath, string folderName, string folderPath)
@@ -229,7 +343,6 @@ namespace ComicReader.ViewModels
             IComicReaderService reader = _readerFactory.GetReader(format);
 
             int totalPages = await reader.GetPageCountAsync(filePath);
-            Bitmap? cover = await reader.ExtractCoverAsync(filePath);
 
             var comic = new ComicBook
             {
@@ -244,9 +357,17 @@ namespace ComicReader.ViewModels
                 LastAccessedTime = DateTime.MinValue
             };
 
-            if (cover is not null)
+            try
             {
-                comic.CoverImagePath = await _fileService.SaveCoverImageAsync(comic.Id, cover);
+                using Bitmap? cover = await reader.ExtractCoverAsync(filePath);
+                if (cover is not null)
+                {
+                    comic.CoverImagePath = await _fileService.SaveCoverImageAsync(comic.Id, cover);
+                }
+            }
+            catch
+            {
+                // Cover extraction failure should never block importing the comic.
             }
 
             _libraryStore.Comics.Add(comic);

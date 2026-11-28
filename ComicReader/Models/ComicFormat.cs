@@ -8,6 +8,7 @@ namespace ComicReader.Models
         Unknown = 0,
         Pdf = 1,
         Zip = 2,
-        Cbz = 3
+        Cbz = 3,
+        Folder = 4
     }
 }

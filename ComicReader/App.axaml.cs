@@ -51,6 +51,7 @@ namespace ComicReader
         {
             services.AddSingleton(_ => new PdfService(NativePdfRendererFactory?.Invoke()));
             services.AddSingleton<ZipService>();
+            services.AddSingleton<FolderImageReaderService>();
             services.AddSingleton<IComicReaderFactory, ComicReaderFactory>();
             services.AddSingleton<IFileService>(sp => new FileService(() =>
             {

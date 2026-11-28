@@ -52,10 +52,26 @@ namespace ComicReader.ViewModels
         private double _currentScrollRatio;
         private double _currentPageLocalRatio;
         private bool _hasRestoredInitialScroll;
+        private bool _isChangingChapterProgrammatically;
         private volatile bool _isClosed;
 
         [ObservableProperty]
         private string _comicTitle = string.Empty;
+
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(HasMultipleChapters))]
+        [NotifyPropertyChangedFor(nameof(HasNextChapter))]
+        [NotifyPropertyChangedFor(nameof(HasPreviousChapter))]
+        private ObservableCollection<ChapterModel> _chapters = new();
+
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(HasMultipleChapters))]
+        [NotifyPropertyChangedFor(nameof(HasNextChapter))]
+        [NotifyPropertyChangedFor(nameof(HasPreviousChapter))]
+        [NotifyPropertyChangedFor(nameof(CurrentChapterId))]
+        [NotifyPropertyChangedFor(nameof(CurrentChapterBookmarks))]
+        [NotifyPropertyChangedFor(nameof(IsCurrentPageBookmarked))]
+        private ChapterModel? _selectedChapter;
 
         [ObservableProperty]
         private ObservableCollection<ComicPageItem> _pages = new();
@@ -83,6 +99,11 @@ namespace ComicReader.ViewModels
         private string _bookmarkToastMessage = "Đã lưu dấu trang";
 
         [ObservableProperty]
+        private bool _isBookmarkPanelOpen;
+
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(CurrentChapterBookmarks))]
+        [NotifyPropertyChangedFor(nameof(IsCurrentPageBookmarked))]
         private ObservableCollection<Bookmark> _bookmarks = new();
 
         /// <summary>
@@ -124,25 +145,85 @@ namespace ComicReader.ViewModels
         public string PageIndicatorText => $"Page {CurrentPage} of {TotalPages}";
 
         /// <summary>
+        /// 1-based current page index alias for chapter/page synchronization.
+        /// </summary>
+        public int CurrentPageIndex => CurrentPage;
+
+        /// <summary>
         /// Formatted zoom percentage text (e.g., "100%").
         /// </summary>
         public string ZoomPercentText => $"{ZoomLevel:P0}";
 
         /// <summary>
-        /// Indicates whether the current page has a saved bookmark.
+        /// True when the loaded comic (Folder, ZIP/CBZ, or PDF) has 2 or more chapters.
         /// </summary>
-        public bool IsCurrentPageBookmarked => Bookmarks.Any(b => b.PageNumber == CurrentPage);
+        public bool HasMultipleChapters => Chapters.Count > 1;
+
+        /// <summary>
+        /// True when there is a next chapter after <see cref="SelectedChapter"/>.
+        /// </summary>
+        public bool HasNextChapter
+        {
+            get
+            {
+                if (SelectedChapter is null || Chapters.Count <= 1) return false;
+                int idx = Chapters.IndexOf(SelectedChapter);
+                return idx >= 0 && idx < Chapters.Count - 1;
+            }
+        }
+
+        /// <summary>
+        /// True when there is a previous chapter before <see cref="SelectedChapter"/>.
+        /// </summary>
+        public bool HasPreviousChapter => SelectedChapter is not null && Chapters.IndexOf(SelectedChapter) > 0;
+
+        /// <summary>
+        /// Active chapter identifier used to isolate bookmarks and progress per chapter.
+        /// </summary>
+        public string CurrentChapterId => SelectedChapter?.ChapterId ?? _currentComic?.Id ?? string.Empty;
+
+        /// <summary>
+        /// Bookmarks belonging only to the currently open chapter (plotted on the page slider track).
+        /// </summary>
+        public ObservableCollection<Bookmark> CurrentChapterBookmarks =>
+            new(Bookmarks.Where(b => string.Equals(GetNormalizedChapterId(b), CurrentChapterId, StringComparison.Ordinal)));
+
+        /// <summary>
+        /// Indicates whether the current page in the active chapter has a saved bookmark.
+        /// </summary>
+        public bool IsCurrentPageBookmarked =>
+            Bookmarks.Any(b => string.Equals(GetNormalizedChapterId(b), CurrentChapterId, StringComparison.Ordinal) &&
+                               b.PageNumber == CurrentPage);
 
         partial void OnCurrentPageChanged(int value)
         {
+            OnPropertyChanged(nameof(CurrentPageIndex));
             OnPropertyChanged(nameof(PageIndicatorText));
             OnPropertyChanged(nameof(IsCurrentPageBookmarked));
         }
 
         partial void OnTotalPagesChanged(int value) => OnPropertyChanged(nameof(PageIndicatorText));
 
+        partial void OnSelectedChapterChanged(ChapterModel? value)
+        {
+            if (_isChangingChapterProgrammatically || value is null || _currentComic is null || _isClosed)
+            {
+                return;
+            }
+
+            _ = SwitchToChapterFromUiAsync(value);
+        }
+
+        private async Task SwitchToChapterFromUiAsync(ChapterModel targetChapter)
+        {
+            await SaveProgressAsync();
+            await LoadChapterSessionAsync(targetChapter, targetPage: 1, targetLocalRatio: 0.0);
+            await SaveProgressAsync();
+        }
+
         /// <summary>
-        /// Opens a reusable read session, restores saved progress, and loads only the visible page window.
+        /// Discovers chapters (&lt; 200 pages each), restores saved progress/bookmarks,
+        /// and opens the active chapter's reading session.
         /// </summary>
         public async Task LoadComicAsync(ComicBook comic)
         {
@@ -155,16 +236,35 @@ namespace ComicReader.ViewModels
             _currentComic = comic;
             ComicTitle = comic.DisplayName;
 
-            IComicReaderService readerService = _readerFactory.GetReader(comic.Format);
-            IComicReadSession openedSession = await readerService.OpenSessionAsync(comic.FilePath);
-            if (_isClosed)
+            IReadOnlyList<ChapterModel> discovered = await _readerFactory.DiscoverChaptersAsync(comic);
+            if (_isClosed) return;
+
+            if (discovered.Count == 0)
             {
-                _ = Task.Run(openedSession.Dispose);
-                return;
+                discovered = new[]
+                {
+                    new ChapterModel
+                    {
+                        ChapterId = comic.Id,
+                        Title = comic.DisplayName,
+                        OrderIndex = 0,
+                        Format = comic.Format,
+                        SourcePath = comic.FilePath,
+                        PageCount = comic.TotalPages
+                    }
+                };
             }
 
-            _readSession = openedSession;
-            TotalPages = _readSession.PageCount;
+            _isChangingChapterProgrammatically = true;
+            try
+            {
+                Chapters = new ObservableCollection<ChapterModel>(discovered);
+                OnPropertyChanged(nameof(HasMultipleChapters));
+            }
+            finally
+            {
+                _isChangingChapterProgrammatically = false;
+            }
 
             ReadingProgress? saved = await _storageService.GetProgressAsync(comic.Id);
             IReadOnlyList<Bookmark> savedBookmarks = await _bookmarkService.GetBookmarksAsync(comic.Id);
@@ -178,33 +278,110 @@ namespace ComicReader.ViewModels
 
             Bookmark? latestBookmark = savedBookmarks.OrderByDescending(b => b.CreatedAtUtc).FirstOrDefault();
 
-            // Always prioritize the latest bookmark first; otherwise fall back to last reading progress / page 1.
-            CurrentPage = latestBookmark is not null
-                ? Math.Clamp(latestBookmark.PageNumber, 1, Math.Max(1, TotalPages))
-                : (saved is not null
-                    ? Math.Clamp(saved.CurrentPage, 1, Math.Max(1, TotalPages))
-                    : Math.Clamp(comic.CurrentPage, 1, Math.Max(1, TotalPages)));
+            ChapterModel initialChapter = Chapters[0];
+            if (latestBookmark is not null)
+            {
+                ChapterModel? bmChapter = Chapters.FirstOrDefault(c =>
+                    string.Equals(c.ChapterId, latestBookmark.ChapterId, StringComparison.Ordinal));
+                if (bmChapter is not null)
+                {
+                    initialChapter = bmChapter;
+                }
+            }
+            else if (saved is not null && !string.IsNullOrWhiteSpace(saved.CurrentChapterId))
+            {
+                ChapterModel? savedChapter = Chapters.FirstOrDefault(c =>
+                    string.Equals(c.ChapterId, saved.CurrentChapterId, StringComparison.Ordinal));
+                if (savedChapter is not null)
+                {
+                    initialChapter = savedChapter;
+                }
+            }
 
-            // Always open at 100% (fit-to-width like standard PDF readers); user can zoom freely afterward.
-            ZoomLevel = AppConstants.DefaultZoomLevel;
+            int initialPage = latestBookmark is not null &&
+                              string.Equals(GetNormalizedChapterId(latestBookmark), initialChapter.ChapterId, StringComparison.Ordinal)
+                ? latestBookmark.PageNumber
+                : (saved is not null ? saved.CurrentPage : comic.CurrentPage);
 
-            _currentScrollRatio = saved?.ScrollOffsetRatio ?? 0.0;
-            _currentPageLocalRatio = latestBookmark is not null
+            double initialLocalRatio = latestBookmark is not null &&
+                                       string.Equals(GetNormalizedChapterId(latestBookmark), initialChapter.ChapterId, StringComparison.Ordinal)
                 ? latestBookmark.PageLocalOffsetRatio
                 : (saved?.PageLocalOffsetRatio ?? 0.0);
 
-            OnPropertyChanged(nameof(IsCurrentPageBookmarked));
-            InitializePagePlaceholders();
+            _currentScrollRatio = saved?.ScrollOffsetRatio ?? 0.0;
 
-            // Tier 2 (Full Quality) keeps 100% original resolution for current/bookmark + 8 behind + 8 ahead (16 surrounding pages).
+            _isChangingChapterProgrammatically = true;
+            try
+            {
+                SelectedChapter = initialChapter;
+            }
+            finally
+            {
+                _isChangingChapterProgrammatically = false;
+            }
+
+            await LoadChapterSessionAsync(initialChapter, initialPage, initialLocalRatio);
+        }
+
+        private async Task LoadChapterSessionAsync(ChapterModel chapter, int targetPage, double targetLocalRatio)
+        {
+            if (_currentComic is null || _isClosed) return;
+
+            CancelBulkPreload();
+            CancelWindowLoading();
+            _hasRestoredInitialScroll = false;
+
+            _imageCache.Clear(index =>
+            {
+                if (index >= 0 && index < Pages.Count)
+                {
+                    Pages[index].Image = null;
+                }
+            });
+            Pages.Clear();
+
+            IComicReadSession? previousSession = _readSession;
+            _readSession = null;
+            if (previousSession is not null)
+            {
+                _ = Task.Run(previousSession.Dispose);
+            }
+
+            IComicReaderService readerService = _readerFactory.GetReader(chapter.Format != ComicFormat.Unknown ? chapter.Format : _currentComic.Format);
+            IComicReadSession openedSession = await readerService.OpenChapterSessionAsync(
+                string.IsNullOrWhiteSpace(chapter.SourcePath) ? _currentComic.FilePath : chapter.SourcePath,
+                chapter);
+
+            if (_isClosed)
+            {
+                _ = Task.Run(openedSession.Dispose);
+                return;
+            }
+
+            _readSession = openedSession;
+            TotalPages = _readSession.PageCount;
+
+            ComicTitle = HasMultipleChapters
+                ? $"{_currentComic.DisplayName} — {chapter.Title}"
+                : _currentComic.DisplayName;
+
+            CurrentPage = Math.Clamp(targetPage, 1, Math.Max(1, TotalPages));
+            ZoomLevel = AppConstants.DefaultZoomLevel;
+            _currentPageLocalRatio = Math.Clamp(targetLocalRatio, 0.0, 1.0);
+
+            OnPropertyChanged(nameof(CurrentChapterId));
+            OnPropertyChanged(nameof(CurrentChapterBookmarks));
+            OnPropertyChanged(nameof(IsCurrentPageBookmarked));
+            OnPropertyChanged(nameof(HasNextChapter));
+            OnPropertyChanged(nameof(HasPreviousChapter));
+
+            InitializePagePlaceholders();
             _imageCache.ConfigureWindow(PreloadBehindCount, PreloadAheadCount);
 
             Task initialWindowTask = EnsurePageWindowLoadedAsync(CurrentPage - 1, reanchorAfterLoad: true);
 
             if (TotalPages > 1)
             {
-                // Tier 1 (Preview): wait for bookmark + 8 behind + 8 ahead Full Quality window to finish first,
-                // then fill lightweight previews for remaining pages without competing for decode slots.
                 if (TotalPages <= FullLoadPageThreshold)
                 {
                     StartBulkPreviewPreload(TotalPages, CurrentPage - 1, initialWindowTask);
@@ -215,6 +392,51 @@ namespace ComicReader.ViewModels
                 }
             }
         }
+
+        [RelayCommand]
+        private async Task NextChapterAsync()
+        {
+            if (SelectedChapter is null || Chapters.Count <= 1) return;
+            int idx = Chapters.IndexOf(SelectedChapter);
+            if (idx < 0 || idx >= Chapters.Count - 1) return;
+
+            ChapterModel next = Chapters[idx + 1];
+            _isChangingChapterProgrammatically = true;
+            try
+            {
+                SelectedChapter = next;
+            }
+            finally
+            {
+                _isChangingChapterProgrammatically = false;
+            }
+
+            await SwitchToChapterFromUiAsync(next);
+        }
+
+        [RelayCommand]
+        private async Task PreviousChapterAsync()
+        {
+            if (SelectedChapter is null || Chapters.Count <= 1) return;
+            int idx = Chapters.IndexOf(SelectedChapter);
+            if (idx <= 0) return;
+
+            ChapterModel prev = Chapters[idx - 1];
+            _isChangingChapterProgrammatically = true;
+            try
+            {
+                SelectedChapter = prev;
+            }
+            finally
+            {
+                _isChangingChapterProgrammatically = false;
+            }
+
+            await SwitchToChapterFromUiAsync(prev);
+        }
+
+        [RelayCommand]
+        private void ToggleBookmarkPanel() => IsBookmarkPanelOpen = !IsBookmarkPanelOpen;
 
         /// <summary>
         /// Updates the exact current page and intra-page scroll offset, loads nearby pages, and debounces progress saving.
@@ -260,12 +482,38 @@ namespace ComicReader.ViewModels
         }
 
         /// <summary>
-        /// Navigates to a saved bookmark's exact page and intra-page scroll position.
+        /// Navigates to a saved bookmark's exact ChapterId, PageNumber, and intra-page scroll position.
         /// </summary>
         [RelayCommand]
         private async Task NavigateToBookmarkAsync(Bookmark? bookmark)
         {
-            if (bookmark is null || bookmark.PageNumber < 1 || bookmark.PageNumber > TotalPages) return;
+            if (bookmark is null) return;
+
+            string targetChapterId = GetNormalizedChapterId(bookmark);
+            if (!string.Equals(targetChapterId, CurrentChapterId, StringComparison.Ordinal))
+            {
+                ChapterModel? targetChapter = Chapters.FirstOrDefault(c =>
+                    string.Equals(c.ChapterId, targetChapterId, StringComparison.Ordinal));
+
+                if (targetChapter is not null)
+                {
+                    _isChangingChapterProgrammatically = true;
+                    try
+                    {
+                        SelectedChapter = targetChapter;
+                    }
+                    finally
+                    {
+                        _isChangingChapterProgrammatically = false;
+                    }
+
+                    await LoadChapterSessionAsync(targetChapter, bookmark.PageNumber, bookmark.PageLocalOffsetRatio);
+                    await SaveProgressAsync();
+                    return;
+                }
+            }
+
+            if (bookmark.PageNumber < 1 || bookmark.PageNumber > TotalPages) return;
 
             CancelWindowLoading();
             CurrentPage = bookmark.PageNumber;
@@ -379,7 +627,9 @@ namespace ComicReader.ViewModels
 
             CancelWindowLoading();
 
-            Bookmark? bookmark = Bookmarks.FirstOrDefault(b => b.PageNumber == pageNumber);
+            Bookmark? bookmark = Bookmarks.FirstOrDefault(b =>
+                string.Equals(GetNormalizedChapterId(b), CurrentChapterId, StringComparison.Ordinal) &&
+                b.PageNumber == pageNumber);
             double targetLocalRatio = bookmark?.PageLocalOffsetRatio ?? 0.0;
 
             CurrentPage = pageNumber;
@@ -534,40 +784,83 @@ namespace ComicReader.ViewModels
         }
 
         /// <summary>
-        /// Saves a bookmark for the exact ComicId, ChapterId, and PageNumber, then updates the page badge.
+        /// Toggles a bookmark for the exact (ComicId, ChapterId, PageNumber) without overwriting other pages.
         /// </summary>
         [RelayCommand]
         private async Task AddBookmarkAsync()
         {
             if (_currentComic is null) return;
 
+            string chapterId = CurrentChapterId;
+            string chapterTitle = HasMultipleChapters
+                ? (SelectedChapter?.Title ?? _currentComic.DisplayName)
+                : string.Empty;
+
             var bookmark = new Bookmark
             {
+                BookmarkId = Guid.NewGuid().ToString("N"),
                 ComicId = _currentComic.Id,
-                ChapterId = _currentComic.ParentFolderPath ?? _currentComic.Id,
+                ChapterId = chapterId,
+                ChapterTitle = chapterTitle,
                 PageNumber = CurrentPage,
                 PageLocalOffsetRatio = _currentPageLocalRatio,
-                Note = $"Page {CurrentPage}"
+                Note = string.IsNullOrWhiteSpace(chapterTitle)
+                    ? $"Trang {CurrentPage}"
+                    : $"{chapterTitle} - Trang {CurrentPage}"
             };
 
-            await _bookmarkService.SaveBookmarkAsync(bookmark);
+            bool added = await _bookmarkService.SaveBookmarkAsync(bookmark);
 
-            Bookmark? existing = Bookmarks.FirstOrDefault(b => b.PageNumber == CurrentPage);
-            if (existing is not null)
+            Bookmark? existing = Bookmarks.FirstOrDefault(b =>
+                string.Equals(GetNormalizedChapterId(b), chapterId, StringComparison.Ordinal) &&
+                b.PageNumber == CurrentPage);
+
+            if (added)
+            {
+                if (existing is not null)
+                {
+                    Bookmarks.Remove(existing);
+                }
+                Bookmarks.Add(bookmark);
+            }
+            else if (existing is not null)
             {
                 Bookmarks.Remove(existing);
             }
 
-            Bookmarks.Add(bookmark);
             if (CurrentPage >= 1 && CurrentPage <= Pages.Count)
             {
-                Pages[CurrentPage - 1].IsBookmarked = true;
+                Pages[CurrentPage - 1].IsBookmarked = added;
             }
 
+            OnPropertyChanged(nameof(CurrentChapterBookmarks));
             OnPropertyChanged(nameof(IsCurrentPageBookmarked));
             CancelDebouncedSave();
             await SaveProgressAsync();
-            await ShowBookmarkToastAsync();
+            await ShowBookmarkToastAsync(added
+                ? $"Đã lưu dấu trang (Trang {CurrentPage})"
+                : $"Đã xóa dấu trang (Trang {CurrentPage})");
+        }
+
+        /// <summary>
+        /// Removes a specific bookmark from the list and JSON storage.
+        /// </summary>
+        [RelayCommand]
+        private async Task RemoveBookmarkAsync(Bookmark? bookmark)
+        {
+            if (bookmark is null || _currentComic is null) return;
+
+            await _bookmarkService.RemoveBookmarkByIdAsync(_currentComic.Id, bookmark.BookmarkId);
+            Bookmarks.Remove(bookmark);
+
+            if (string.Equals(GetNormalizedChapterId(bookmark), CurrentChapterId, StringComparison.Ordinal) &&
+                bookmark.PageNumber >= 1 && bookmark.PageNumber <= Pages.Count)
+            {
+                Pages[bookmark.PageNumber - 1].IsBookmarked = false;
+            }
+
+            OnPropertyChanged(nameof(CurrentChapterBookmarks));
+            OnPropertyChanged(nameof(IsCurrentPageBookmarked));
         }
 
         /// <summary>
@@ -649,18 +942,28 @@ namespace ComicReader.ViewModels
 
         private void InitializePagePlaceholders()
         {
+            var bookmarkedPages = Bookmarks
+                .Where(b => string.Equals(GetNormalizedChapterId(b), CurrentChapterId, StringComparison.Ordinal))
+                .Select(static b => b.PageNumber)
+                .ToHashSet();
+
             var items = new ObservableCollection<ComicPageItem>();
             for (int i = 1; i <= TotalPages; i++)
             {
                 items.Add(new ComicPageItem
                 {
                     PageNumber = i,
-                    IsBookmarked = Bookmarks.Any(b => b.PageNumber == i)
+                    IsBookmarked = bookmarkedPages.Contains(i)
                 });
             }
 
             Pages = items;
         }
+
+        private string GetNormalizedChapterId(Bookmark bookmark) =>
+            string.IsNullOrWhiteSpace(bookmark.ChapterId)
+                ? (_currentComic?.Id ?? bookmark.ComicId)
+                : bookmark.ChapterId;
 
         private async Task EnsurePageWindowLoadedAsync(int centerIndex, bool cancelPrevious = false, bool reanchorAfterLoad = false)
         {
@@ -1122,7 +1425,7 @@ namespace ComicReader.ViewModels
             _readSession = null;
         }
 
-        private async Task ShowBookmarkToastAsync()
+        private async Task ShowBookmarkToastAsync(string message = "Đã lưu dấu trang")
         {
             _toastCts?.Cancel();
             _toastCts = new CancellationTokenSource();
@@ -1130,7 +1433,7 @@ namespace ComicReader.ViewModels
 
             Dispatcher.UIThread.Post(() =>
             {
-                BookmarkToastMessage = "Đã lưu dấu trang";
+                BookmarkToastMessage = message;
                 IsBookmarkToastVisible = true;
             });
 
@@ -1185,6 +1488,7 @@ namespace ComicReader.ViewModels
             return new ReadingProgress
             {
                 ComicId = _currentComic.Id,
+                CurrentChapterId = CurrentChapterId,
                 CurrentPage = CurrentPage,
                 TotalPages = TotalPages,
                 ScrollOffsetRatio = _currentScrollRatio,

@@ -7,17 +7,91 @@ using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Media.Imaging;
 using ComicReader.Helpers;
+using ComicReader.Models;
 using ComicReader.Services.Interfaces;
 using ComicReader.Services.Native;
 
 namespace ComicReader.Services
 {
     /// <summary>
-    /// Reads comic pages in-memory from ZIP/CBZ archives and decodes them into Avalonia Bitmaps.
+    /// Reads comic pages in-memory from ZIP/CBZ archives and discovers chapters (&lt; 200 pages each).
     /// </summary>
     public sealed class ZipService : IComicReaderService
     {
         private static readonly NaturalStringComparer NaturalComparer = new();
+
+        /// <summary>
+        /// Inspects a ZIP/CBZ archive and splits it into chapters by internal subfolder structure
+        /// and by the strict &lt; 200 pages-per-chapter limit.
+        /// </summary>
+        public static List<ChapterModel> DiscoverChapters(
+            string filePath,
+            ComicFormat format = ComicFormat.Zip,
+            List<string>? warnings = null,
+            int maxPagesPerChapter = AppConstants.MaxPagesPerChapter)
+        {
+            var chapters = new List<ChapterModel>();
+            if (!File.Exists(filePath)) return chapters;
+
+            using ZipArchive archive = ZipFile.OpenRead(filePath);
+            List<ZipArchiveEntry> entries = GetSortedImageEntries(archive);
+            if (entries.Count == 0) return chapters;
+
+            // Group entries by normalized internal directory path.
+            var grouped = entries
+                .GroupBy(e => GetNormalizedEntryDirectory(e.FullName), StringComparer.OrdinalIgnoreCase)
+                .OrderBy(g => g.Key, NaturalComparer)
+                .ToList();
+
+            string archiveName = Path.GetFileNameWithoutExtension(filePath);
+            int orderIndex = 0;
+
+            if (grouped.Count <= 1)
+            {
+                string key = grouped[0].Key;
+                string baseTitle = string.IsNullOrEmpty(key) ? archiveName : GetReadableGroupTitle(key, string.Empty);
+                List<string> entryNames = grouped[0].Select(static e => e.FullName).ToList();
+
+                chapters.AddRange(ChapterSplitter.SplitItemsIntoChapters(
+                    filePath,
+                    baseTitle,
+                    string.IsNullOrEmpty(key) ? archiveName : key,
+                    entryNames,
+                    format,
+                    static (ch, names) => ch.ZipEntryNames = names,
+                    ref orderIndex,
+                    warnings,
+                    maxPagesPerChapter));
+
+                return chapters;
+            }
+
+            // Strip common top-level directory prefix if all groups live under one root folder in the ZIP.
+            string commonPrefix = FindCommonTopPrefix(grouped.Select(static g => g.Key).ToList());
+
+            foreach (IGrouping<string, ZipArchiveEntry> group in grouped)
+            {
+                string title = string.IsNullOrEmpty(group.Key)
+                    ? $"{archiveName} (Root)"
+                    : GetReadableGroupTitle(group.Key, commonPrefix);
+
+                List<string> entryNames = group.Select(static e => e.FullName).ToList();
+                string chapterKey = string.IsNullOrEmpty(group.Key) ? "__root__" : group.Key;
+
+                chapters.AddRange(ChapterSplitter.SplitItemsIntoChapters(
+                    filePath,
+                    title,
+                    chapterKey,
+                    entryNames,
+                    format,
+                    static (ch, names) => ch.ZipEntryNames = names,
+                    ref orderIndex,
+                    warnings,
+                    maxPagesPerChapter));
+            }
+
+            return chapters;
+        }
 
         /// <inheritdoc />
         public Task<IComicReadSession> OpenSessionAsync(string filePath, CancellationToken cancellationToken = default)
@@ -25,7 +99,23 @@ namespace ComicReader.Services
             return Task.Run<IComicReadSession>(() =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                return new ZipReadSession(filePath);
+                return new ZipReadSession(filePath, allowedEntryNames: null);
+            }, cancellationToken);
+        }
+
+        /// <inheritdoc />
+        public Task<IComicReadSession> OpenChapterSessionAsync(
+            string sourcePath,
+            ChapterModel chapter,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.Run<IComicReadSession>(() =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                IReadOnlyList<string>? filter = chapter.ZipEntryNames.Count > 0
+                    ? chapter.ZipEntryNames
+                    : null;
+                return new ZipReadSession(sourcePath, filter);
             }, cancellationToken);
         }
 
@@ -74,6 +164,39 @@ namespace ComicReader.Services
             }, cancellationToken);
         }
 
+        private static string GetNormalizedEntryDirectory(string fullName)
+        {
+            string normalized = fullName.Replace('\\', '/');
+            int lastSlash = normalized.LastIndexOf('/');
+            return lastSlash <= 0 ? string.Empty : normalized[..lastSlash];
+        }
+
+        private static string FindCommonTopPrefix(List<string> keys)
+        {
+            if (keys.Count == 0 || keys.Any(string.IsNullOrEmpty)) return string.Empty;
+
+            string first = keys[0];
+            int firstSlash = first.IndexOf('/');
+            if (firstSlash <= 0) return string.Empty;
+
+            string candidate = first[..(firstSlash + 1)];
+            return keys.All(k => k.StartsWith(candidate, StringComparison.OrdinalIgnoreCase))
+                ? candidate
+                : string.Empty;
+        }
+
+        private static string GetReadableGroupTitle(string key, string commonPrefix)
+        {
+            string trimmed = !string.IsNullOrEmpty(commonPrefix) &&
+                             key.StartsWith(commonPrefix, StringComparison.OrdinalIgnoreCase)
+                ? key[commonPrefix.Length..]
+                : key;
+
+            return string.IsNullOrWhiteSpace(trimmed)
+                ? key
+                : trimmed.Replace("/", " / ");
+        }
+
         private static byte[] ReadEntryBytes(ZipArchiveEntry entry)
         {
             using Stream entryStream = entry.Open();
@@ -109,9 +232,9 @@ namespace ComicReader.Services
             private IntPtr _nativeSession;
             private bool _disposed;
 
-            public ZipReadSession(string filePath)
+            public ZipReadSession(string filePath, IReadOnlyList<string>? allowedEntryNames)
             {
-                if (RustInterop.IsAvailable)
+                if (allowedEntryNames is null && RustInterop.IsAvailable)
                 {
                     _nativeSession = RustInterop.open_document(filePath);
                     if (_nativeSession != IntPtr.Zero)
@@ -122,7 +245,18 @@ namespace ComicReader.Services
                 }
 
                 _archive = ZipFile.OpenRead(filePath);
-                _entries = GetSortedImageEntries(_archive);
+                List<ZipArchiveEntry> allSorted = GetSortedImageEntries(_archive);
+
+                if (allowedEntryNames is { Count: > 0 })
+                {
+                    var allowedSet = new HashSet<string>(allowedEntryNames, StringComparer.OrdinalIgnoreCase);
+                    _entries = allSorted.Where(e => allowedSet.Contains(e.FullName)).ToList();
+                }
+                else
+                {
+                    _entries = allSorted;
+                }
+
                 PageCount = _entries.Count;
             }
 

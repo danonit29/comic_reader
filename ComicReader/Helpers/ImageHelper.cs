@@ -75,7 +75,7 @@ namespace ComicReader.Helpers
         {
             using var memoryStream = new MemoryStream(bytes, writable: false);
             int? originalWidth = TryReadImageWidth(bytes);
-            int? targetWidth = originalWidth.HasValue && originalWidth.Value > maxPixelWidth
+            int? targetWidth = maxPixelWidth > 0 && originalWidth.HasValue && originalWidth.Value > maxPixelWidth
                 ? maxPixelWidth
                 : null;
 

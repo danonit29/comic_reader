@@ -1,11 +1,13 @@
 using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Text.Json.Serialization;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace ComicReader.Models
 {
     /// <summary>
-    /// Represents an imported folder containing one or more comic files.
+    /// Represents an imported folder containing one or more comic series or chapters.
     /// </summary>
     public sealed partial class ComicFolder : ObservableObject
     {
@@ -41,6 +43,18 @@ namespace ComicReader.Models
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(ComicCountText))]
         private int _comicCount;
+
+        /// <summary>
+        /// Discovered chapters inside this folder (populated during recursive folder parsing).
+        /// </summary>
+        [JsonIgnore]
+        public ObservableCollection<ChapterModel> Chapters { get; set; } = new();
+
+        /// <summary>
+        /// Warnings generated when any chapter exceeded the 199-page limit and was split.
+        /// </summary>
+        [JsonIgnore]
+        public List<string> ParseWarnings { get; set; } = new();
 
         /// <summary>
         /// Formatted item count displayed on folder cards.

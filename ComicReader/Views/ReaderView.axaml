@@ -78,18 +78,53 @@
             BorderBrush="{StaticResource SubtleBorderBrush}"
             BorderThickness="0,0,0,1">
             <Grid ColumnDefinitions="Auto,*,Auto">
-                <Button
-                    Grid.Column="0"
-                    Classes="reader-toolbar-btn"
-                    Command="{CompiledBinding CloseReaderCommand}">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <PathIcon Width="15" Height="15" Data="{StaticResource IconArrowLeft}" Foreground="White" />
-                        <TextBlock
-                            VerticalAlignment="Center"
-                            IsVisible="{CompiledBinding !IsCompactLayout, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
-                            Text="Back to Library" />
-                    </StackPanel>
-                </Button>
+                <StackPanel Grid.Column="0" VerticalAlignment="Center" Orientation="Horizontal" Spacing="6">
+                    <Button
+                        Classes="reader-toolbar-btn"
+                        Command="{CompiledBinding CloseReaderCommand}">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <PathIcon Width="15" Height="15" Data="{StaticResource IconArrowLeft}" Foreground="White" />
+                            <TextBlock
+                                VerticalAlignment="Center"
+                                IsVisible="{CompiledBinding !IsCompactLayout, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
+                                Text="Back to Library" />
+                        </StackPanel>
+                    </Button>
+
+                    <!-- Chapter Selector & Next Chapter Button (right next to Library button when multi-chapter) -->
+                    <ComboBox
+                        MaxWidth="220"
+                        VerticalAlignment="Center"
+                        Background="#252526"
+                        BorderBrush="#33FFFFFF"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Foreground="White"
+                        IsVisible="{CompiledBinding HasMultipleChapters}"
+                        ItemsSource="{CompiledBinding Chapters}"
+                        SelectedItem="{CompiledBinding SelectedChapter, Mode=TwoWay}"
+                        ToolTip.Tip="Chọn chương">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate x:DataType="models:ChapterModel">
+                                <TextBlock Text="{CompiledBinding DisplayTitle}" TextTrimming="CharacterEllipsis" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+
+                    <Button
+                        Classes="reader-toolbar-btn"
+                        Command="{CompiledBinding NextChapterCommand}"
+                        IsVisible="{CompiledBinding HasNextChapter}"
+                        ToolTip.Tip="Chương tiếp theo">
+                        <StackPanel Orientation="Horizontal" Spacing="4">
+                            <TextBlock
+                                VerticalAlignment="Center"
+                                IsVisible="{CompiledBinding !IsCompactLayout, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
+                                Text="Chương tiếp" />
+                            <PathIcon Width="13" Height="13" Data="{StaticResource IconChevronRight}" Foreground="White" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
 
                 <TextBlock
                     Grid.Column="1"
@@ -128,13 +163,31 @@
                         Classes="reader-toolbar-btn"
                         Classes.bookmarked="{CompiledBinding IsCurrentPageBookmarked}"
                         Command="{CompiledBinding AddBookmarkCommand}"
-                        ToolTip.Tip="Bookmark this page">
+                        ToolTip.Tip="Đánh dấu / Bỏ dấu trang hiện tại">
                         <StackPanel Orientation="Horizontal" Spacing="6">
                             <PathIcon Width="15" Height="15" Data="{StaticResource IconBookmark}" />
                             <TextBlock
                                 VerticalAlignment="Center"
                                 IsVisible="{CompiledBinding !IsCompactLayout, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
-                                Text="Bookmarks" />
+                                Text="Bookmark" />
+                        </StackPanel>
+                    </Button>
+
+                    <Button
+                        Classes="reader-toolbar-btn"
+                        Classes.bookmarked="{CompiledBinding IsBookmarkPanelOpen}"
+                        Command="{CompiledBinding ToggleBookmarkPanelCommand}"
+                        ToolTip.Tip="Mở danh sách dấu trang">
+                        <StackPanel Orientation="Horizontal" Spacing="5">
+                            <TextBlock
+                                VerticalAlignment="Center"
+                                IsVisible="{CompiledBinding !IsCompactLayout, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
+                                Text="Danh sách" />
+                            <TextBlock
+                                VerticalAlignment="Center"
+                                FontWeight="SemiBold"
+                                Foreground="{StaticResource BookmarkActiveBrush}"
+                                Text="{CompiledBinding Bookmarks.Count}" />
                         </StackPanel>
                     </Button>
                 </StackPanel>
@@ -274,6 +327,97 @@
             </StackPanel>
         </Border>
 
+        <!-- Bookmarks & Chapter Sidebar Drawer -->
+        <Border
+            Grid.Row="1"
+            ZIndex="40"
+            Width="290"
+            HorizontalAlignment="Right"
+            VerticalAlignment="Stretch"
+            Background="#F01A1A1A"
+            BorderBrush="{StaticResource SubtleBorderBrush}"
+            BorderThickness="1,0,0,0"
+            IsVisible="{CompiledBinding IsBookmarkPanelOpen}">
+            <Grid Margin="12" RowDefinitions="Auto,*,Auto">
+                <Grid Grid.Row="0" Margin="0,0,0,10" ColumnDefinitions="*,Auto">
+                    <TextBlock
+                        Grid.Column="0"
+                        VerticalAlignment="Center"
+                        FontSize="14"
+                        FontWeight="SemiBold"
+                        Foreground="White"
+                        Text="Danh sách Bookmark" />
+                    <Button
+                        Grid.Column="1"
+                        Padding="6,2"
+                        Classes="reader-toolbar-btn"
+                        Command="{CompiledBinding ToggleBookmarkPanelCommand}"
+                        Content="✕" />
+                </Grid>
+
+                <ListBox
+                    Grid.Row="1"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    ItemsSource="{CompiledBinding Bookmarks}">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate x:DataType="models:Bookmark">
+                            <Grid Margin="0,2" ColumnDefinitions="*,Auto">
+                                <Button
+                                    Grid.Column="0"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Left"
+                                    Background="#262626"
+                                    BorderBrush="#33FFFFFF"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="10,7"
+                                    Command="{CompiledBinding ViewModel.NavigateToBookmarkCommand, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
+                                    CommandParameter="{CompiledBinding}">
+                                    <StackPanel Spacing="2">
+                                        <TextBlock
+                                            FontSize="12"
+                                            FontWeight="SemiBold"
+                                            Foreground="White"
+                                            Text="{CompiledBinding DisplayLabel}"
+                                            TextTrimming="CharacterEllipsis" />
+                                        <TextBlock
+                                            FontSize="11"
+                                            Foreground="#9CA3AF"
+                                            Text="{CompiledBinding Note}"
+                                            TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                </Button>
+
+                                <Button
+                                    Grid.Column="1"
+                                    Margin="4,0,0,0"
+                                    Padding="8,6"
+                                    VerticalAlignment="Center"
+                                    Background="#2A1A1A"
+                                    BorderBrush="#55C42B1C"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Foreground="#F87171"
+                                    Content="✕"
+                                    ToolTip.Tip="Xóa bookmark"
+                                    Command="{CompiledBinding ViewModel.RemoveBookmarkCommand, RelativeSource={RelativeSource AncestorType=views:ReaderView}}"
+                                    CommandParameter="{CompiledBinding}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <TextBlock
+                    Grid.Row="2"
+                    Margin="0,8,0,0"
+                    FontSize="11"
+                    Foreground="#9CA3AF"
+                    Text="Bấm vào bookmark để nhảy tới đúng chương và trang."
+                    TextWrapping="Wrap" />
+            </Grid>
+        </Border>
+
         <!-- Bottom Page Navigation Bar with Slider & Inline Bookmark Markers -->
         <Border
             Grid.Row="2"
@@ -301,7 +445,7 @@
                         Grid.Row="0"
                         Margin="6,0,6,0"
                         VerticalAlignment="Bottom"
-                        ItemsSource="{CompiledBinding Bookmarks}">
+                        ItemsSource="{CompiledBinding CurrentChapterBookmarks}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
                                 <helpers:BookmarkTrackPanel

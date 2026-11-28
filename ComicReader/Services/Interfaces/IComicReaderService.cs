@@ -62,6 +62,15 @@ namespace ComicReader.Services.Interfaces
         Task<IComicReadSession> OpenSessionAsync(string filePath, CancellationToken cancellationToken = default);
 
         /// <summary>
+        /// Opens a reading session scoped to a specific chapter.
+        /// </summary>
+        Task<IComicReadSession> OpenChapterSessionAsync(
+            string sourcePath,
+            Models.ChapterModel chapter,
+            CancellationToken cancellationToken = default)
+            => OpenSessionAsync(sourcePath, cancellationToken);
+
+        /// <summary>
         /// Returns the total number of readable pages in the comic file.
         /// </summary>
         Task<int> GetPageCountAsync(string filePath, CancellationToken cancellationToken = default);

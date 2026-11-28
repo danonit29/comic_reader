@@ -23,6 +23,7 @@ namespace ComicReader.Helpers
         public const int CoverDecodeWidth = 240;
         public const int PreviewDecodeWidth = 240;
         public const int MaxReaderDecodeWidth = 0; // 0 = keep 100% original resolution for Full Quality tier
+        public const int MaxPagesPerChapter = 199; // Strictly < 200 pages per chapter
 
         public const double MinZoomLevel = 0.3;
         public const double MaxZoomLevel = 4.0;

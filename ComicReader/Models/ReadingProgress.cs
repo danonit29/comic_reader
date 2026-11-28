@@ -14,6 +14,11 @@ namespace ComicReader.Models
         public string ComicId { get; set; } = string.Empty;
 
         /// <summary>
+        /// Identifier of the last read chapter (empty for single-chapter books).
+        /// </summary>
+        public string CurrentChapterId { get; set; } = string.Empty;
+
+        /// <summary>
         /// 1-based index of the last read page.
         /// </summary>
         public int CurrentPage { get; set; } = 1;
